@@ -1,0 +1,14 @@
+# OneDrive / Windows
+desktop.ini
+Thumbs.db
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Editor
+.vs/
+*.user
+*.suo
+
+# Temporäre/Test-Dateien
+*.mp3
+*.tmp
