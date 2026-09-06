@@ -344,7 +344,7 @@ function Update-UiSelection {
     foreach ($control in @($restoreChocolatey,$restoreVSCode,$restoreModules,$restoreUserEnvironment,$restoreMachineEnvironment,$restoreWindowsComponents,$restoreConnections)) { $control.Checked = $false; $control.Enabled = $false }
     if (-not $script:selectedBackup) { return }
     if ($script:selectedBackup.Error) { $backupDetails.Text = $script:selectedBackup.Error; return }
-    $deleteBackup.Enabled = -not $script:selectedBackup.IsArchive
+    $deleteBackup.Enabled = $true
     $sourceType = if ($script:selectedBackup.IsArchive) { 'ZIP-Backup; wird vor der Wiederherstellung neben dem Archiv entpackt.' } else { 'Backup-Ordner' }
     $backupDetails.Text = $script:selectedBackup.Path + "`r`n" + "$sourceType | $($script:selectedBackup.Files) Dateien; $($script:selectedBackup.Warnings.Count) Warnungen."
     $extrasSelection.Text = "Ausgewählte Sicherung: $($script:selectedBackup.Path)"
@@ -457,7 +457,8 @@ $deleteBackup.Add_Click({
         if (-not $script:selectedBackup -or $script:selectedBackup.Error) { throw 'Zuerst eine gültige Sicherung auswählen.' }
         $selectedPath = $script:selectedBackup.Path
         $sourceRoot = $restoreRoot.Text
-        $question = "Diese Sicherung dauerhaft löschen?`r`n`r`n$selectedPath`r`n`r`nDer gesamte ausgewählte Backup-Ordner wird entfernt. Liegt er in OneDrive, wird die Löschung synchronisiert."
+        $deleteDescription = if ($script:selectedBackup.IsArchive) { 'Nur die ausgewählte ZIP-Datei wird entfernt. Ein separat entpackter Backup-Ordner bleibt erhalten.' } else { 'Der gesamte ausgewählte Backup-Ordner wird entfernt. Ein daneben vorhandenes ZIP-Backup bleibt erhalten.' }
+        $question = "Diese Sicherung dauerhaft löschen?`r`n`r`n$selectedPath`r`n`r`n$deleteDescription Liegt sie in OneDrive, wird die Löschung synchronisiert."
         if ([Windows.Forms.MessageBox]::Show($form,$question,'Sicherung löschen','YesNo','Warning','Button2') -ne 'Yes') { return }
         $tabs.Enabled = $false; $form.UseWaitCursor = $true
         $status.Text = 'Sicherung wird gelöscht ...'; $status.Refresh()

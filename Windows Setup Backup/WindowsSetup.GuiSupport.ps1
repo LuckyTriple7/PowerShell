@@ -131,23 +131,29 @@ function Remove-SetupBackup {
     $ErrorActionPreference = 'Stop'
     $source = (Get-SetupAbsoluteDirectory $SourceRoot).TrimEnd('\')
     $target = (Get-SetupAbsoluteDirectory $BackupPath).TrimEnd('\')
+    $sourceItem = Get-Item -LiteralPath $source -Force
     # Only the selected backup itself or a direct child of the displayed source.
-    if ($target -ne $source -and (Split-Path -Path $target -Parent).TrimEnd('\') -ne $source) {
-        throw 'Der ausgewählte Ordner liegt außerhalb der angezeigten Backup-Quelle.'
+    if ($target -ne $source -and (-not $sourceItem.PSIsContainer -or (Split-Path -Path $target -Parent).TrimEnd('\') -ne $source)) {
+        throw 'Die ausgewählte Sicherung liegt außerhalb der angezeigten Backup-Quelle.'
     }
     $item = Get-Item -LiteralPath $target -Force
-    if (-not $item.PSIsContainer -or $item.LinkType) { throw 'Das Löschziel muss ein echter Backup-Ordner sein.' }
-    $manifest = Read-SetupDocument (Join-Path $target 'manifest.json')
-    if ($manifest.SchemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($manifest.Computer)) { throw 'Kein gültiges Backup-Verzeichnis.' }
-    $expectedName = '^' + [regex]::Escape($manifest.Computer) + '-\d{8}-\d{6}-\d{3}$'
-    if ($item.Name -notmatch $expectedName) { throw 'Der Ordnername entspricht keinem erzeugten Backup. Er wird nicht automatisch gelöscht.' }
+    if ($item.LinkType) { throw 'Verknüpfte Dateien oder Ordner werden nicht automatisch gelöscht.' }
+    $isArchive = -not $item.PSIsContainer -and $item.Extension -ieq '.zip'
+    if (-not $item.PSIsContainer -and -not $isArchive) { throw 'Das Löschziel muss ein Backup-Ordner oder ZIP-Backup sein.' }
+    $manifest = Read-SetupBackupDocument $target 'manifest.json'
+    if ($manifest.SchemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($manifest.Computer)) { throw 'Keine gültige Sicherung.' }
+    $suffix = if ($isArchive) { '\.zip' } else { '' }
+    $expectedName = '^' + [regex]::Escape($manifest.Computer) + '-\d{8}-\d{6}-\d{3}' + $suffix + '$'
+    if ($item.Name -notmatch $expectedName) { throw 'Der Name entspricht keiner erzeugten Sicherung. Sie wird nicht automatisch gelöscht.' }
     $mutex = [Threading.Mutex]::new($false, ('Local\WindowsSetupBackup-' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
     $locked = $false
     try {
         try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
         if (-not $locked) { throw 'Eine Sicherung oder Wiederherstellung läuft bereits. Bitte später löschen.' }
-        if ($PSCmdlet.ShouldProcess($target, 'Ausgewählten Backup-Ordner dauerhaft löschen')) {
-            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
+        $action = if ($isArchive) { 'Ausgewähltes ZIP-Backup dauerhaft löschen' } else { 'Ausgewählten Backup-Ordner dauerhaft löschen' }
+        if ($PSCmdlet.ShouldProcess($target, $action)) {
+            if ($isArchive) { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
+            else { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop }
         }
     } finally {
         if ($locked) { $mutex.ReleaseMutex() }

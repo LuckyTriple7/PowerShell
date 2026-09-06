@@ -2,6 +2,11 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.1.0.1] - 2026-09-06
+### ZIP-Backups löschen
+- Gültige ZIP-Backups können nach Sicherheitsprüfung direkt über die GUI gelöscht werden.
+- Beim Löschen eines ZIP-Backups bleibt ein separat entpackter Backup-Ordner erhalten und umgekehrt.
+
 ## [1.1.0.0] - 2026-09-06
 ### Backup und Wiederherstellung erweitert
 - Benutzerdefinierte Ordner mit Dateiendungsfiltern, Prüfsummen und kontrollierter Wiederherstellung ergänzt.
