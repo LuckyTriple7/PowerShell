@@ -2,6 +2,10 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.1.0.2] - 2026-09-06
+### Archivpasswort gespeichert
+- Das Archivpasswort wird in den GUI-Einstellungen per Windows-DPAPI für den aktuellen Benutzer verschlüsselt gespeichert und beim nächsten Start wieder geladen.
+
 ## [1.1.0.1] - 2026-09-06
 ### ZIP-Backups löschen
 - Gültige ZIP-Backups können nach Sicherheitsprüfung direkt über die GUI gelöscht werden.

@@ -4,13 +4,13 @@
 Grafische Oberfläche für Windows-Setup-Backups, Restore und geplante Sicherungen.
 #>
 [CmdletBinding()]
-param([switch]$ValidateOnly, [string]$ValidationBackupRoot)
+param([switch]$ValidateOnly, [string]$ValidationBackupRoot, [string]$StateDirectory)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 . (Join-Path $PSScriptRoot 'WindowsSetup.GuiSupport.ps1')
-$stateRoot = Join-Path $PSScriptRoot 'GuiState'
+$stateRoot = if ($StateDirectory) { $StateDirectory } else { Join-Path $PSScriptRoot 'GuiState' }
 $settingsPath = Join-Path $stateRoot 'settings.json'
 $workerPath = Join-Path $PSScriptRoot 'Invoke-WindowsSetupJob.ps1'
 $script:operation = $null
@@ -277,6 +277,7 @@ function Save-UiPreferences {
         Winget = $backupWinget.Checked; Chocolatey = $backupChocolatey.Checked; Python = $backupPython.Checked; Developer = $backupDeveloper.Checked
         Agreements = $backupAgreements.Checked; ExtraPython = $extraPython.Text
         CustomFolders = $customFolders.Text; ExcludedExtensions = $excludedExtensions.Text; CreateArchive = $createArchive.Checked
+        ProtectedArchivePassword = Protect-SetupSecret $archivePassword.Text
         Frequency = $frequency.SelectedIndex; Day = $weekDay.SelectedIndex; Time = $scheduleTime.Value.ToString('HH:mm'); Battery = $allowBattery.Checked
     } $settingsPath
 }
@@ -587,6 +588,9 @@ if (Test-Path -LiteralPath $settingsPath) {
         if ($null -ne $saved.CustomFolders) { $customFolders.Text = $saved.CustomFolders }
         if ($null -ne $saved.ExcludedExtensions) { $excludedExtensions.Text = $saved.ExcludedExtensions }
         if ($null -ne $saved.CreateArchive) { $createArchive.Checked = [bool]$saved.CreateArchive }
+        if (-not [string]::IsNullOrEmpty([string]$saved.ProtectedArchivePassword)) {
+            $archivePassword.Text = Unprotect-SetupSecret ([string]$saved.ProtectedArchivePassword)
+        }
         $frequency.SelectedIndex = [Math]::Max(0,[Math]::Min(1,[int]$saved.Frequency))
         $weekDay.SelectedIndex = [Math]::Max(0,[Math]::Min(6,[int]$saved.Day))
         if ($saved.Time) { $scheduleTime.Value = [datetime]::Today.Add([timespan]::Parse($saved.Time)) }
@@ -607,7 +611,7 @@ if ($ValidateOnly) {
     if ($ValidationBackupRoot) { $restoreRoot.Text = $ValidationBackupRoot; Update-UiBackupList }
     [pscustomobject]@{ Tabs = $tabs.TabPages.Count; BackupButton = $startBackup.Text; RestoreButton = $startRestore.Text
         TaskButton = $saveTask.Text; DefaultDestination = $destination.Text; SevenZipPath = $sevenZipPath
-        ArchiveText = $createArchive.Text; PasswordOptionAvailable = [bool]$sevenZipPath; DeleteButton = $deleteBackup.Text
+        ArchiveText = $createArchive.Text; PasswordOptionAvailable = [bool]$sevenZipPath; ArchivePasswordLoaded = -not [string]::IsNullOrEmpty($archivePassword.Text); DeleteButton = $deleteBackup.Text
         BackupChocolateyEnabled = $backupChocolatey.Enabled; BackupChocolateyChecked = $backupChocolatey.Checked
         PackageItems = $packageList.Items.Count; ChocolateyItems = $chocolateyRestoreList.Items.Count; ChocolateyChecked = $chocolateyRestoreList.CheckedItems.Count
         ChocolateyOptionEnabled = $restoreChocolatey.Enabled; ChocolateyOptionChecked = $restoreChocolatey.Checked; ChocolateyListEnabled = $chocolateyRestoreList.Enabled
