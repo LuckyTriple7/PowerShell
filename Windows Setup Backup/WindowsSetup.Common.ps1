@@ -1,8 +1,27 @@
 #requires -Version 5.1
 # Shared helpers. Run Backup-WindowsSetup.ps1 or Restore-WindowsSetup.ps1.
+$script:SetupBackupVersion = '1.1.0.0'
 function Write-SetupJson {
     param($Value, [string]$Path)
     ConvertTo-Json -InputObject $Value -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Get-SetupSevenZipPath {
+    $command = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    foreach ($candidate in @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
+    }
+    return $null
+}
+
+function Get-SetupChocolateyPath {
+    $command = Get-Command choco.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    foreach ($candidate in @("$env:ChocolateyInstall\bin\choco.exe", "$env:LOCALAPPDATA\UniGetUI\Chocolatey\bin\choco.exe", "$env:ProgramData\chocolatey\bin\choco.exe")) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
+    }
+    return $null
 }
 
 function Get-SetupLocations {
