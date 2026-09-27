@@ -15,6 +15,7 @@ param(
     [switch]$Fonts,
     [switch]$WlanProfiles,
     [switch]$SshKeys,
+    [switch]$ClaudeSettings,
     [string]$UndoRoot = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -88,9 +89,9 @@ foreach ($key in @($CustomFolderKeys | Select-Object -Unique)) {
     }
 }
 
-if ($Fonts -or $WlanProfiles -or $SshKeys) {
+if ($Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings) {
     $personalPath = Join-Path $backup 'personal-settings.json'
-    if (-not (Test-Path -LiteralPath $personalPath)) { throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile oder SSH-Schlüssel.' }
+    if (-not (Test-Path -LiteralPath $personalPath)) { throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile, SSH-Schlüssel oder Claude-Daten.' }
     $personal = Get-Content -LiteralPath $personalPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-SetupDocumentSchema $personal 'personal-settings.json'
     function Get-PersonalSource {
@@ -156,6 +157,19 @@ if ($Fonts -or $WlanProfiles -or $SshKeys) {
             # The new file inherits the profile ACL (user, SYSTEM, Administrators), which OpenSSH accepts for private keys.
             if (Copy-PersonalFile $source (Join-SetupSafePath $sshRoot $name) "Ssh\$name" $sshFile.SHA256) { Write-Host "SSH-Datei wiederhergestellt: $name" }
         }
+    }
+    if ($ClaudeSettings) {
+        $claudeRoot = Join-Path $env:USERPROFILE '.claude'
+        $restored = 0
+        foreach ($claudeFile in @($personal.ClaudeFiles)) {
+            $relative = [string]$claudeFile.Relative
+            if (-not (Test-SetupClaudePath $relative) -or [string]$claudeFile.File -ne "Personal\Claude\$relative") { throw "Ungültiger Claude-Eintrag in personal-settings.json: $relative" }
+            $source = Get-PersonalSource $claudeFile 'Claude'
+            if (Copy-PersonalFile $source (Join-SetupSafePath $claudeRoot $relative) "Claude\$relative" $claudeFile.SHA256) { $restored++ }
+        }
+        if (-not $WhatIfPreference) { Write-Host "Claude-Code-Dateien wiederhergestellt: $restored von $(@($personal.ClaudeFiles).Count); die übrigen waren bereits identisch." }
+        # Memory folders are named after the project path, so they only match again under the same user name and project folders.
+        if (@($personal.ClaudeFiles).Count -gt 0) { Write-Host 'Claude-Code-Memories gelten für dieselben Projektpfade wie beim Backup. Claude Code danach neu starten.' }
     }
 }
 

@@ -1,6 +1,6 @@
 # Windows-Setup sichern und wiederherstellen
 
-Aktuelle Version: **1.2.0.0**. Änderungen sind in [`CHANGELOG.md`](CHANGELOG.md) dokumentiert.
+Aktuelle Version: **1.2.1.0**. Änderungen sind in [`CHANGELOG.md`](CHANGELOG.md) dokumentiert.
 
 PowerShell-Skripte für eine spätere Neuinstallation. Bilder, Dokumente und andere persönliche Dateien sind ausgeschlossen; diese kommen über OneDrive. Programme werden als Installationsliste erfasst, nicht als installierte Programmdateien gesichert. Ansible ist für die Skripte nicht erforderlich und kann sie später aufrufen.
 
@@ -91,6 +91,7 @@ Optional: `-Destination 'E:\WindowsSetup'` für ein anderes Sicherungsziel oder 
 | `devices-connections.json` | Druckerinventar und persistente Netzlaufwerke. Automatisch wiederherstellbar sind Netzwerkdrucker und Netzlaufwerke; lokale/WSD-/USB-Drucker bleiben wegen fehlender Treiberpakete Inventar. |
 | `personal-settings.json`, `Personal\Fonts` | Benutzerschriftarten aus `%LOCALAPPDATA%\Microsoft\Windows\Fonts` mit Prüfsummen; wiederherstellbar im Reiter Zusatzbereiche. |
 | `Personal\Wlan`, `Personal\Ssh` | Nur mit **WLAN-Profile und SSH-Schlüssel** (`-IncludeSensitiveData`) und ausschließlich in ein passwortgeschütztes 7z: alle WLAN-Profile einschließlich Schlüssel im Klartext und alle Dateien aus `~\.ssh`. Während der Sicherung liegen sie kurz unverschlüsselt unter `%TEMP%`. Wiederherstellung für den aktuellen Benutzer im Reiter Zusatzbereiche. |
+| `Personal\Claude` | Mit **Claude-Code-Memories und -Einstellungen** (`-IncludeClaude`): alle `~\.claude\projects\*\memory`-Ordner sowie `settings.json`, `settings.local.json`, `CLAUDE.md`, `keybindings.json`, `commands`, `agents`, `hooks`, `plans`, `output-styles` und eigene `skills`. Nicht enthalten: Anmeldedaten (`.credentials.json`, `~\.claude.json`), Sitzungsverläufe, file-history, Caches und aus dem Claude-Konto synchronisierte Skills. Memory-Ordner sind nach dem Projektpfad benannt und greifen nur bei gleichem Benutzernamen und gleichen Projektordnern. |
 | `Personal\Reference` | Referenzdateien zur manuellen Wiederherstellung: `hosts`, bei als Administrator gestarteter Sicherung zusätzlich aktiver Energieplan (`powercfg /import`) und Standard-App-Zuordnungen (`Dism /Online /Import-DefaultAppAssociations`). |
 | `manifest.json` | Windows-Version, ursprünglicher Profilpfad, Dateiliste mit SHA256-Prüfsummen, Exportstatus und Warnungen. Wird erst am Ende des Laufs geschrieben. |
 

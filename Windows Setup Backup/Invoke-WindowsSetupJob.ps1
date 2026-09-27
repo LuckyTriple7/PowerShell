@@ -70,6 +70,7 @@ try {
             CreateArchive = [bool]$request.CreateArchive
             ArchivePassword = Unprotect-SetupSecret ([string]$request.ProtectedArchivePassword)
             IncludeSensitiveData = ($request.PSObject.Properties['IncludeSensitiveData'] -and [bool]$request.IncludeSensitiveData)
+            IncludeClaude = ($request.PSObject.Properties['IncludeClaude'] -and [bool]$request.IncludeClaude)
         }
         & (Join-Path $PSScriptRoot 'Backup-WindowsSetup.ps1') @parameters *>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) { throw $_ }
@@ -98,8 +99,8 @@ try {
         $requestCustomFolders = [string[]]@($request.CustomFolderKeys | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $requestStoreApps = [string[]]@($request.StorePackageFamilies | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $requestChocolatey = [string[]]@($request.ChocolateyPackages | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $requestFonts = [bool]$request.Fonts; $requestWlan = [bool]$request.WlanProfiles; $requestSsh = [bool]$request.SshKeys
-        $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or $requestFonts -or $requestWlan -or $requestSsh -or
+        $requestFonts = [bool]$request.Fonts; $requestWlan = [bool]$request.WlanProfiles; $requestSsh = [bool]$request.SshKeys; $requestClaude = [bool]$request.ClaudeSettings
+        $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or $requestFonts -or $requestWlan -or $requestSsh -or $requestClaude -or
             $request.VSCodeExtensions -or $request.PowerShellModules -or $request.UserEnvironment -or $request.MachineEnvironment -or
             $request.WindowsComponents -or $request.Connections -or $requestStoreApps.Count -gt 0 -or $requestChocolatey.Count -gt 0
         $windowsParameters = $null; $pythonParameters = $null
@@ -114,7 +115,7 @@ try {
                 UserEnvironment = [bool]$request.UserEnvironment; MachineEnvironment = [bool]$request.MachineEnvironment
                 WindowsComponents = [bool]$request.WindowsComponents; Connections = [bool]$request.Connections
                 StorePackageFamilies = $requestStoreApps
-                ChocolateyPackages = $requestChocolatey; Fonts = $requestFonts; WlanProfiles = $requestWlan; SshKeys = $requestSsh; UndoRoot = (Join-Path $RunDirectory 'BeforeRestore')
+                ChocolateyPackages = $requestChocolatey; Fonts = $requestFonts; WlanProfiles = $requestWlan; SshKeys = $requestSsh; ClaudeSettings = $requestClaude; UndoRoot = (Join-Path $RunDirectory 'BeforeRestore')
                 Confirm = $false }
         }
         if ($request.PythonPackages) {

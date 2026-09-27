@@ -132,6 +132,15 @@ try {
         catch { if ($_.Exception.Message -notlike 'Prüfsumme stimmt nicht:*') { throw } }
     }
 
+    Test-Case 'Claude path filter keeps memories and excludes credentials' {
+        foreach ($allowed in @('settings.json','CLAUDE.md','projects\c--Projekt\memory\MEMORY.md','skills\demo\SKILL.md','hooks\check.ps1')) {
+            Assert-True (Test-SetupClaudePath $allowed) "Erlaubter Claude-Pfad abgelehnt: $allowed"
+        }
+        foreach ($blocked in @('.credentials.json','projects\c--Projekt\abc.jsonl','file-history\x\y','cache\x','projects\c--Projekt\memory\..\..\..\.credentials.json','settings.json.bak','skills\synced\x\SKILL.md')) {
+            Assert-True (-not (Test-SetupClaudePath $blocked)) "Claude-Pfad nicht ausgeschlossen: $blocked"
+        }
+    }
+
     Test-Case 'GUI builds with the new controls' {
         $state = Join-Path $testRoot 'GuiState'
         $gui = & (Join-Path $PSScriptRoot 'WindowsSetup-GUI.ps1') -ValidateOnly -StateDirectory $state
@@ -180,7 +189,7 @@ try {
         if (-not $sevenZipPath) { Write-Host 'SKIP: 7-Zip nicht installiert.' -ForegroundColor Yellow; return }
         $password = 'a b\ ' + [char]0x00C4 + [char]0x20AC + ' c\\'
         $destination = Join-Path $testRoot 'DirectSevenZipBackup'
-        $output = & (Join-Path $PSScriptRoot 'Backup-WindowsSetup.ps1') -Destination $destination -SkipWinget -SkipPython -SkipChocolatey -CreateArchive -ArchivePassword $password -IncludeSensitiveData 3>$null
+        $output = & (Join-Path $PSScriptRoot 'Backup-WindowsSetup.ps1') -Destination $destination -SkipWinget -SkipPython -SkipChocolatey -CreateArchive -ArchivePassword $password -IncludeSensitiveData -IncludeClaude 3>$null
         $backupResult = @($output | Where-Object { $_.PSObject.Properties['BackupPath'] })
         Assert-True ($backupResult.Count -eq 1) 'Direktes 7z-Backup lieferte kein eindeutiges Ergebnisobjekt.'
         $archive = $backupResult[0].BackupPath
@@ -195,6 +204,10 @@ try {
         Assert-True ($process.ExitCode -eq 0) "7-Zip lehnte das woertliche Passwort ab (Exitcode $($process.ExitCode))."
         $personal = Read-SetupBackupDocument $archive 'personal-settings.json' $password
         Assert-True ([bool]$personal.SensitiveIncluded) 'Sensible Daten wurden trotz Option nicht erfasst.'
+        if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.claude\settings.json')) {
+            Assert-True (@($personal.ClaudeFiles).Count -gt 0) 'Claude-Daten wurden trotz Option nicht erfasst.'
+        }
+        Assert-True (@($personal.ClaudeFiles | Where-Object { $_.Relative -like '*credentials*' -or $_.Relative -like '*.jsonl' }).Count -eq 0) 'Claude-Anmeldedaten oder Verläufe wurden gesichert.'
         $script:sevenZipBackup = $archive; $script:sevenZipPassword = $password
     }
 

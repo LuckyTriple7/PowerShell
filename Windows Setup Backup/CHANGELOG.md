@@ -2,6 +2,10 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.2.1.0] - 2026-09-27
+### Claude-Code-Daten
+- Neue Option für Claude-Code-Memories und -Einstellungen (ohne Anmeldedaten und Verläufe) mit Wiederherstellung im Reiter Zusatzbereiche.
+
 ## [1.2.0.0] - 2026-09-27
 ### Sicherheit, Aufbewahrung und weitere Bereiche
 - Das Archivpasswort muss in der GUI wiederholt werden; nur ein bestätigtes Passwort wird verwendet und gespeichert.

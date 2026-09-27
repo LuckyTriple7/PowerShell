@@ -266,13 +266,13 @@ function Test-SetupRequest {
     if ($Request.SchemaVersion -ne 1) { throw 'Unbekannte Auftragsversion.' }
     if ($Request.Operation -notin @('Backup','Restore','Verify')) { throw 'Unbekannte Aktion.' }
     $booleanFields = if ($Request.Operation -eq 'Backup') {
-        @('IncludeDeveloperSettings','SkipWinget','SkipPython','SkipChocolatey','AcceptSourceAgreements','CreateArchive','IncludeSensitiveData')
+        @('IncludeDeveloperSettings','SkipWinget','SkipPython','SkipChocolatey','AcceptSourceAgreements','CreateArchive','IncludeSensitiveData','IncludeClaude')
     } elseif ($Request.Operation -eq 'Restore') {
         @('Preview','Programs','Settings','Shortcuts','IncludeCommonStartMenu','UseSavedVersions','AcceptAgreements','PythonPackages',
             'VSCodeExtensions','PowerShellModules','UserEnvironment','MachineEnvironment','WindowsComponents','Connections')
     } else { @() }
     # Added after 1.1.1.0; absent in older requests and then treated as false.
-    $optionalRestoreFields = @('Fonts','WlanProfiles','SshKeys')
+    $optionalRestoreFields = @('Fonts','WlanProfiles','SshKeys','ClaudeSettings')
     if ($Request.Operation -eq 'Restore') { $booleanFields += $optionalRestoreFields }
     foreach ($name in $booleanFields) {
         $property = $Request.PSObject.Properties[$name]
@@ -326,9 +326,9 @@ function Test-SetupRequest {
         $extrasSelected = $customFolderKeys.Count -gt 0 -or $Request.VSCodeExtensions -or $Request.PowerShellModules -or
             $Request.UserEnvironment -or $Request.MachineEnvironment -or $Request.WindowsComponents -or $Request.Connections -or
             $storePackageFamilies.Count -gt 0 -or $chocolateyPackages.Count -gt 0 -or
-            [bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys
-        if (([bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys) -and -not (Test-SetupBackupDocument $root 'personal-settings.json' $archivePassword)) {
-            throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile oder SSH-Schlüssel.'
+            [bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys -or [bool]$Request.ClaudeSettings
+        if (([bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys -or [bool]$Request.ClaudeSettings) -and -not (Test-SetupBackupDocument $root 'personal-settings.json' $archivePassword)) {
+            throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile, SSH-Schlüssel oder Claude-Daten.'
         }
         if (-not ($Request.Programs -or $Request.Settings -or $Request.Shortcuts -or $Request.PythonPackages -or $extrasSelected)) { throw 'Mindestens einen Bestandteil zur Wiederherstellung auswählen.' }
         if ($Request.Programs -and -not $manifest.WingetReady) { throw 'Dieser Sicherung fehlt eine verwendbare WinGet-Liste.' }
@@ -466,7 +466,7 @@ function Test-SetupBackupIntegrity {
     $personalPath = Join-Path $root 'personal-settings.json'
     if (Test-Path -LiteralPath $personalPath -PathType Leaf) {
         $personal = Read-SetupDocument $personalPath
-        foreach ($item in @(@($personal.Fonts) + @($personal.WlanProfiles) + @($personal.SshFiles))) {
+        foreach ($item in @(@($personal.Fonts) + @($personal.WlanProfiles) + @($personal.SshFiles) + @($personal.ClaudeFiles))) {
             if ($item) { $entries.Add([pscustomobject]@{ Stored = [string]$item.File; SHA256 = [string]$item.SHA256 }) }
         }
     }

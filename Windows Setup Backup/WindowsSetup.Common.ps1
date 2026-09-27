@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 # Shared helpers. Run Backup-WindowsSetup.ps1 or Restore-WindowsSetup.ps1.
-$script:SetupBackupVersion = '1.2.0.0'
+$script:SetupBackupVersion = '1.2.1.0'
 function Write-SetupJson {
     param($Value, [string]$Path)
     ConvertTo-Json -InputObject $Value -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
@@ -19,6 +19,18 @@ function Assert-SetupArchivePassword {
     param([string]$Value)
     # 7-Zip's own command-line parser treats every " as a quote toggle, so -p can never carry one.
     if ($Value.Contains('"')) { throw 'Das Archivpasswort darf kein Anfuehrungszeichen (") enthalten, weil 7-Zip es ueber die Kommandozeile nicht verarbeiten kann.' }
+}
+
+function Test-SetupClaudePath {
+    # Claude Code memories and user settings only; credentials, transcripts, file history and caches never qualify.
+    param([string]$Relative)
+    $path = $Relative.Replace('/','\')
+    if ($path -match '(^|\\)\.\.(\\|$)' -or $path.Contains(':')) { return $false }
+    # Synced skills are downloaded again from the Claude account and have paths beyond MAX_PATH.
+    if ($path -match '^skills\\synced(\\|$)') { return $false }
+    if ($path -in @('settings.json','settings.local.json','CLAUDE.md','keybindings.json')) { return $true }
+    if ($path -match '^projects\\[^\\]+\\memory\\.+') { return $true }
+    return $path -match '^(skills|commands|agents|hooks|plans|output-styles)\\.+'
 }
 
 function Get-SetupChocolateyPath {

@@ -18,7 +18,8 @@ param(
     [string[]]$ExcludedExtensions = @(),
     [switch]$CreateArchive,
     [string]$ArchivePassword = '',
-    [switch]$IncludeSensitiveData
+    [switch]$IncludeSensitiveData,
+    [switch]$IncludeClaude
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
@@ -214,7 +215,7 @@ foreach ($source in @($CustomFolders | Select-Object -Unique)) {
 }
 try {
     Write-BackupStatus 'Zusätzliche System-, Entwickler- und Verbindungsinventare werden erstellt ...'
-    $extraResult = & (Join-Path $PSScriptRoot 'Backup-SetupExtras.ps1') -BackupPath $backup -IncludeDeveloperSettings:$IncludeDeveloperSettings -SkipChocolatey:$SkipChocolatey -IncludeSensitiveData:$IncludeSensitiveData
+    $extraResult = & (Join-Path $PSScriptRoot 'Backup-SetupExtras.ps1') -BackupPath $backup -IncludeDeveloperSettings:$IncludeDeveloperSettings -SkipChocolatey:$SkipChocolatey -IncludeSensitiveData:$IncludeSensitiveData -IncludeClaude:$IncludeClaude
     foreach ($warning in @($extraResult.Warnings)) { Add-BackupWarning $warning }
 } catch { Add-BackupWarning "Zusätzliche Inventare konnten nicht vollständig erstellt werden: $_" }
 Write-BackupStep 6 'Windows-Einstellungen sichern ...'
@@ -271,6 +272,7 @@ $summary = @(
     "Chocolatey-Pakete: $($extraResult.ChocolateyCount)"
     "Umgebungsvariablen / Windows-Komponenten: $($extraResult.EnvironmentCount) / $($extraResult.FeatureCount)"
     "Drucker / Netzlaufwerke: $($extraResult.PrinterCount) / $($extraResult.DriveCount)"
+    ('Claude-Code-Memories und -Einstellungen: ' + $(if ($IncludeClaude) { "$($extraResult.ClaudeCount) Dateien" } else { 'nicht ausgewaehlt' }))
     ('Schriftarten / WLAN-Profile / SSH-Dateien: {0} / {1}' -f $extraResult.FontCount, $(if ($IncludeSensitiveData) { "$($extraResult.WlanCount) / $($extraResult.SshCount)" } else { 'nicht ausgewaehlt' }))
     "Gesicherte Dateien: $($files.Count)"
     "Registry-Einstellungen: $($registryValues.Count)"

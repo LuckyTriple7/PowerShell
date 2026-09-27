@@ -117,7 +117,8 @@ $backupChocolatey = New-UiCheck 'Chocolatey-Pakete' ([bool]$chocolateyPath)
 $backupChocolatey.Enabled = [bool]$chocolateyPath
 $backupDeveloper = New-UiCheck 'Entwicklereinstellungen'
 $backupAgreements = New-UiCheck 'WinGet-Quellenbedingungen akzeptieren'
-foreach ($control in @($backupWinget,$backupChocolatey,$backupPython,$backupDeveloper,$backupAgreements)) { $backupFlags.Controls.Add($control) }
+$backupClaude = New-UiCheck 'Claude-Code-Memories und -Einstellungen' $true
+foreach ($control in @($backupWinget,$backupChocolatey,$backupPython,$backupDeveloper,$backupClaude,$backupAgreements)) { $backupFlags.Controls.Add($control) }
 Add-UiWide $backupTable $backupFlags 2
 Add-UiWide $backupTable (New-UiLabel 'Weitere Python-Interpreter (optional, ein vollständiger Pfad pro Zeile, z. B. Projekt\.venv\Scripts\python.exe):') 3
 $extraPython = [Windows.Forms.TextBox]::new(); $extraPython.Multiline = $true; $extraPython.ScrollBars = 'Vertical'; $extraPython.Dock = 'Fill'
@@ -227,7 +228,8 @@ $restoreConnections = New-UiCheck 'Netzwerkdrucker und Netzlaufwerke'
 $restoreFonts = New-UiCheck 'Benutzerschriftarten'
 $restoreWlan = New-UiCheck 'WLAN-Profile'
 $restoreSsh = New-UiCheck 'SSH-Schlüssel (~\.ssh)'
-$extraRestoreChecks = @($restoreChocolatey,$restoreVSCode,$restoreModules,$restoreUserEnvironment,$restoreMachineEnvironment,$restoreWindowsComponents,$restoreConnections,$restoreFonts,$restoreWlan,$restoreSsh)
+$restoreClaude = New-UiCheck 'Claude-Code-Memories und -Einstellungen'
+$extraRestoreChecks = @($restoreChocolatey,$restoreVSCode,$restoreModules,$restoreUserEnvironment,$restoreMachineEnvironment,$restoreWindowsComponents,$restoreConnections,$restoreFonts,$restoreWlan,$restoreSsh,$restoreClaude)
 foreach ($control in $extraRestoreChecks) { $extraRestoreFlags.Controls.Add($control) }
 Add-UiWide $extrasTable $extraRestoreFlags 8
 $extrasButtons = New-UiFlow
@@ -297,7 +299,7 @@ function Save-UiPreferences {
         Winget = $backupWinget.Checked; Chocolatey = $backupChocolatey.Checked; Python = $backupPython.Checked; Developer = $backupDeveloper.Checked
         Agreements = $backupAgreements.Checked; ExtraPython = $extraPython.Text
         CustomFolders = $customFolders.Text; ExcludedExtensions = $excludedExtensions.Text; CreateArchive = $createArchive.Checked
-        IncludeSensitiveData = $backupSensitive.Checked; KeepLast = [int]$keepLast.Value
+        IncludeSensitiveData = $backupSensitive.Checked; KeepLast = [int]$keepLast.Value; Claude = $backupClaude.Checked
         ProtectedArchivePassword = Protect-SetupSecret $(if ($archivePassword.Text -ceq $archivePasswordConfirm.Text) { $archivePassword.Text } else { $script:confirmedArchivePassword })
         ProtectedRestoreArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
         Frequency = $frequency.SelectedIndex; Day = $weekDay.SelectedIndex; Time = $scheduleTime.Value.ToString('HH:mm'); Battery = $allowBattery.Checked
@@ -316,7 +318,7 @@ function New-UiBackupRequest {
         CustomFolders = @($customFolders.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         ExcludedExtensions = @($excludedExtensions.Text -split '[,;\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         CreateArchive = $createArchive.Checked; ProtectedArchivePassword = $(if ($usesPassword) { Protect-SetupSecret $archivePassword.Text } else { '' })
-        IncludeSensitiveData = [bool]($usesPassword -and $backupSensitive.Checked); KeepLast = [int]$keepLast.Value
+        IncludeSensitiveData = [bool]($usesPassword -and $backupSensitive.Checked); KeepLast = [int]$keepLast.Value; IncludeClaude = $backupClaude.Checked
     }
     if ($backupSensitive.Checked -and -not ($usesPassword -and $archivePassword.Text)) { throw 'WLAN-Profile und SSH-Schlüssel werden nur in ein verschlüsseltes Archiv gesichert. Archivpasswort angeben oder die Option abwählen.' }
     if ($request.SkipPython) { $request.PythonExecutables = @() }
@@ -341,7 +343,7 @@ function New-UiRestoreRequest {
         VSCodeExtensions = ($ExtrasOnly -and $restoreVSCode.Checked); PowerShellModules = ($ExtrasOnly -and $restoreModules.Checked)
         UserEnvironment = ($ExtrasOnly -and $restoreUserEnvironment.Checked); MachineEnvironment = ($ExtrasOnly -and $restoreMachineEnvironment.Checked)
         WindowsComponents = ($ExtrasOnly -and $restoreWindowsComponents.Checked); Connections = ($ExtrasOnly -and $restoreConnections.Checked)
-        Fonts = ($ExtrasOnly -and $restoreFonts.Checked); WlanProfiles = ($ExtrasOnly -and $restoreWlan.Checked); SshKeys = ($ExtrasOnly -and $restoreSsh.Checked)
+        Fonts = ($ExtrasOnly -and $restoreFonts.Checked); WlanProfiles = ($ExtrasOnly -and $restoreWlan.Checked); SshKeys = ($ExtrasOnly -and $restoreSsh.Checked); ClaudeSettings = ($ExtrasOnly -and $restoreClaude.Checked)
         EnvironmentId = $(if (-not $ExtrasOnly -and $pipEnvironment.SelectedItem) { $pipEnvironment.SelectedItem.Id } else { '' })
         PythonExecutable = $(if ($ExtrasOnly) { '' } else { $targetPython.Text.Trim() })
         ProtectedArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
@@ -443,6 +445,7 @@ function Update-UiSelection {
         $restoreFonts.Enabled = @($personalData.Fonts).Count -gt 0
         $restoreWlan.Enabled = @($personalData.WlanProfiles).Count -gt 0
         $restoreSsh.Enabled = @($personalData.SshFiles).Count -gt 0
+        $restoreClaude.Enabled = @($personalData.ClaudeFiles).Count -gt 0
     }
     foreach ($environment in $script:selectedBackup.Python) {
         [void]$pipEnvironment.Items.Add([pscustomobject]@{ Id = $environment.Id; Executable = $environment.Executable
@@ -484,7 +487,7 @@ function Update-UiTaskStatus {
 }
 function Update-UiSchedulePreview {
     $customCount = @($customFolders.Lines | Where-Object { $_.Trim() }).Count
-    $schedulePreview.Text = "Ziel: $($destination.Text)`r`nWinGet: $($backupWinget.Checked) | Chocolatey: $($backupChocolatey.Checked) | pip: $($backupPython.Checked) | Eigene Ordner: $customCount | Archiv: $($createArchive.Checked) | Behalten: $(if ($keepLast.Value -gt 0) { $keepLast.Value } else { 'alle' })`r`nGeänderte Optionen werden erst mit 'Zeitplan speichern' in die Aufgabe übernommen."
+    $schedulePreview.Text = "Ziel: $($destination.Text)`r`nWinGet: $($backupWinget.Checked) | Chocolatey: $($backupChocolatey.Checked) | pip: $($backupPython.Checked) | Eigene Ordner: $customCount | Claude: $($backupClaude.Checked) | Archiv: $($createArchive.Checked) | Behalten: $(if ($keepLast.Value -gt 0) { $keepLast.Value } else { 'alle' })`r`nGeänderte Optionen werden erst mit 'Zeitplan speichern' in die Aufgabe übernommen."
 }
 
 # User actions: external changes happen only through these buttons.
@@ -544,7 +547,7 @@ $previewRestore.Add_Click({ try { Start-UiOperation (New-UiRestoreRequest $true)
 $previewExtras.Add_Click({ try { Start-UiOperation (New-UiRestoreRequest $true $true) } catch { Show-UiError $_ } })
 $startExtras.Add_Click({ try {
     $request = New-UiRestoreRequest $false $true
-    $description = "Ausgewählte Zusatzbereiche wiederherstellen?`r`n`r`n$($request.BackupPath)`r`n`r`nEigene Ordner: $($request.CustomFolderKeys.Count) | Chocolatey: $($request.ChocolateyPackages.Count) | Store-Apps: $($request.StorePackageFamilies.Count)`r`nVS Code: $($request.VSCodeExtensions) | Module: $($request.PowerShellModules) | Umgebung: $($request.UserEnvironment)/$($request.MachineEnvironment) | Windows: $($request.WindowsComponents) | Verbindungen: $($request.Connections)`r`nSchriftarten: $($request.Fonts) | WLAN: $($request.WlanProfiles) | SSH: $($request.SshKeys)"
+    $description = "Ausgewählte Zusatzbereiche wiederherstellen?`r`n`r`n$($request.BackupPath)`r`n`r`nEigene Ordner: $($request.CustomFolderKeys.Count) | Chocolatey: $($request.ChocolateyPackages.Count) | Store-Apps: $($request.StorePackageFamilies.Count)`r`nVS Code: $($request.VSCodeExtensions) | Module: $($request.PowerShellModules) | Umgebung: $($request.UserEnvironment)/$($request.MachineEnvironment) | Windows: $($request.WindowsComponents) | Verbindungen: $($request.Connections)`r`nSchriftarten: $($request.Fonts) | WLAN: $($request.WlanProfiles) | SSH: $($request.SshKeys) | Claude: $($request.ClaudeSettings)"
     if ([Windows.Forms.MessageBox]::Show($form,$description,'Zusatzbereiche wiederherstellen','YesNo','Warning','Button2') -eq 'Yes') { Start-UiOperation $request }
 } catch { Show-UiError $_ } })
 $startRestore.Add_Click({ try {
@@ -654,6 +657,7 @@ if (Test-Path -LiteralPath $settingsPath) {
         if ($null -ne $saved.CustomFolders) { $customFolders.Text = $saved.CustomFolders }
         if ($null -ne $saved.ExcludedExtensions) { $excludedExtensions.Text = $saved.ExcludedExtensions }
         if ($null -ne $saved.CreateArchive) { $createArchive.Checked = [bool]$saved.CreateArchive }
+        if ($null -ne $saved.Claude) { $backupClaude.Checked = [bool]$saved.Claude }
         if ($null -ne $saved.IncludeSensitiveData) { $backupSensitive.Checked = [bool]$saved.IncludeSensitiveData }
         if ($null -ne $saved.KeepLast) { $keepLast.Value = [Math]::Max(0,[Math]::Min(365,[int]$saved.KeepLast)) }
         if (-not [string]::IsNullOrEmpty([string]$saved.ProtectedArchivePassword)) {

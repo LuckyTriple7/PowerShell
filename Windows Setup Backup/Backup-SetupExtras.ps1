@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$BackupPath, [switch]$IncludeDeveloperSettings, [switch]$SkipChocolatey, [switch]$IncludeSensitiveData)
+param([Parameter(Mandatory)][string]$BackupPath, [switch]$IncludeDeveloperSettings, [switch]$SkipChocolatey, [switch]$IncludeSensitiveData, [switch]$IncludeClaude)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
 $warnings = [Collections.Generic.List[string]]::new()
@@ -122,7 +122,7 @@ function Add-PersonalFile {
     Copy-Item -LiteralPath $Source -Destination $target -Force
     (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 }
-$personal = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = [bool]$IncludeSensitiveData; Fonts = @(); WlanProfiles = @(); SshFiles = @(); References = @() }
+$personal = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = [bool]$IncludeSensitiveData; Fonts = @(); WlanProfiles = @(); SshFiles = @(); ClaudeFiles = @(); References = @() }
 # Per-user fonts only; fonts in C:\Windows\Fonts come with Windows or their installers.
 try {
     $fontRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
@@ -167,6 +167,21 @@ if ($IncludeSensitiveData) {
         }
     } catch { Add-ExtraWarning "SSH-Schlüssel konnten nicht gesichert werden: $_" }
 }
+if ($IncludeClaude) {
+    try {
+        $claudeRoot = Join-Path $env:USERPROFILE '.claude'
+        if (Test-Path -LiteralPath $claudeRoot -PathType Container) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $claudeRoot -File -Recurse -Force -ErrorAction Stop)) {
+                $relative = $file.FullName.Substring($claudeRoot.Length + 1)
+                if (-not (Test-SetupClaudePath $relative)) { continue }
+                if ($file.LinkType) { Add-ExtraWarning "Verknüpfte Claude-Datei wurde ausgelassen: $($file.FullName)"; continue }
+                $stored = "Personal\Claude\$relative"
+                try { $personal.ClaudeFiles += [pscustomobject]@{ Relative = $relative; File = $stored; SHA256 = (Add-PersonalFile $file.FullName $stored) } }
+                catch { Add-ExtraWarning "Claude-Datei nicht gesichert: $($file.FullName): $_" }
+            }
+        }
+    } catch { Add-ExtraWarning "Claude-Code-Memories und -Einstellungen konnten nicht vollständig gesichert werden: $_" }
+}
 # Reference files for manual restore; power plans and app associations need an elevated backup.
 try {
     $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
@@ -196,4 +211,4 @@ Write-SetupJson $personal (Join-Path $BackupPath 'personal-settings.json')
     FeatureCount = $features.Count + $capabilities.Count; PrinterCount = $printers.Count; DriveCount = $drives.Count
     ExtensionCount = @($developer.VSCodeProducts | ForEach-Object { $_.Extensions }).Count; ModuleCount = @($developer.PowerShellModules).Count
     ChocolateyCount = @($chocolatey.Packages).Count; FontCount = @($personal.Fonts).Count
-    WlanCount = @($personal.WlanProfiles).Count; SshCount = @($personal.SshFiles).Count }
+    WlanCount = @($personal.WlanProfiles).Count; SshCount = @($personal.SshFiles).Count; ClaudeCount = @($personal.ClaudeFiles).Count }

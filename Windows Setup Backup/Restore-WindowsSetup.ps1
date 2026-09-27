@@ -27,11 +27,12 @@ param(
     [switch]$Fonts,
     [switch]$WlanProfiles,
     [switch]$SshKeys,
+    [switch]$ClaudeSettings,
     [string]$UndoRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
-$extrasSelected = @($CustomFolderKeys | Where-Object { $_ }).Count -gt 0 -or $VSCodeExtensions -or $PowerShellModules -or $UserEnvironment -or $MachineEnvironment -or $WindowsComponents -or $Connections -or @($StorePackageFamilies | Where-Object { $_ }).Count -gt 0 -or @($ChocolateyPackages | Where-Object { $_ }).Count -gt 0 -or $Fonts -or $WlanProfiles -or $SshKeys
+$extrasSelected = @($CustomFolderKeys | Where-Object { $_ }).Count -gt 0 -or $VSCodeExtensions -or $PowerShellModules -or $UserEnvironment -or $MachineEnvironment -or $WindowsComponents -or $Connections -or @($StorePackageFamilies | Where-Object { $_ }).Count -gt 0 -or @($ChocolateyPackages | Where-Object { $_ }).Count -gt 0 -or $Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings
 if (-not ($Programs -or $Settings -or $Shortcuts -or $extrasSelected)) { throw 'Mindestens einen Bestandteil auswählen. Für eine Vorschau -WhatIf verwenden.' }
 if ($IncludeCommonStartMenu -and -not $Shortcuts) { throw '-IncludeCommonStartMenu erfordert -Shortcuts.' }
 $backup = (Resolve-Path -LiteralPath $BackupPath).ProviderPath
@@ -150,7 +151,7 @@ foreach ($entry in $registry) {
 $extraParameters = @{ BackupPath = $backup; CustomFolderKeys = $CustomFolderKeys; VSCodeExtensions = $VSCodeExtensions
     PowerShellModules = $PowerShellModules; UserEnvironment = $UserEnvironment; MachineEnvironment = $MachineEnvironment
     WindowsComponents = $WindowsComponents; Connections = $Connections; StorePackageFamilies = $StorePackageFamilies
-    ChocolateyPackages = $ChocolateyPackages; Fonts = $Fonts; WlanProfiles = $WlanProfiles; SshKeys = $SshKeys; UseSavedVersions = $UseSavedVersions; UndoRoot = $UndoRoot; WhatIf = $WhatIfPreference; Confirm = $false }
+    ChocolateyPackages = $ChocolateyPackages; Fonts = $Fonts; WlanProfiles = $WlanProfiles; SshKeys = $SshKeys; ClaudeSettings = $ClaudeSettings; UseSavedVersions = $UseSavedVersions; UndoRoot = $UndoRoot; WhatIf = $WhatIfPreference; Confirm = $false }
 if ($extrasSelected) { & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') @extraParameters }
 if ($Shortcuts -and -not $IncludeCommonStartMenu) { Write-Host 'Gemeinsame Startmenü-Verknüpfungen ausgelassen. Optional: -IncludeCommonStartMenu mit Administratorrechten.' }
 if (Test-Path -LiteralPath $undo) { Write-Host "Vorherige Einstellungen/Dateien: $undo (manuelle Rücksicherung)" }
