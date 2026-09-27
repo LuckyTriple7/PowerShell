@@ -11,7 +11,8 @@ param(
     [switch]$Connections,
     [string[]]$StorePackageFamilies = @(),
     [string[]]$ChocolateyPackages = @(),
-    [switch]$UseSavedVersions
+    [switch]$UseSavedVersions,
+    [string]$UndoRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
@@ -20,7 +21,7 @@ $manifest = $null
 if (@($CustomFolderKeys).Count -gt 0) { $manifest = Get-Content -LiteralPath (Join-Path $backup 'manifest.json') -Raw | ConvertFrom-Json }
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$customUndo = Join-Path $backup ('BeforeRestore-Custom-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$customUndo = if ($UndoRoot) { Join-Path $UndoRoot ('Custom-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) } else { Join-Path $backup ('BeforeRestore-Custom-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) }
 if (($MachineEnvironment -or $WindowsComponents) -and -not $isAdmin -and -not $WhatIfPreference) {
     throw 'System-Umgebungsvariablen und Windows-Komponenten erfordern Administratorrechte.'
 }
@@ -29,6 +30,7 @@ if (@($ChocolateyPackages | Where-Object { $_ }).Count -gt 0) {
     $managerPath = Join-Path $backup 'package-managers.json'
     if (-not (Test-Path -LiteralPath $managerPath)) { throw 'Diese Sicherung enthält kein Chocolatey-Inventar.' }
     $managerData = Get-Content -LiteralPath $managerPath -Raw | ConvertFrom-Json
+    Assert-SetupDocumentSchema $managerData 'package-managers.json'
     $availablePackages = @($managerData.Chocolatey.Packages)
     $chocoPath = Get-SetupChocolateyPath
     if (-not $chocoPath -and -not $WhatIfPreference) { throw 'Chocolatey wurde nicht gefunden. Zuerst Chocolatey oder UniGetUI installieren.' }
@@ -59,11 +61,14 @@ foreach ($key in @($CustomFolderKeys | Select-Object -Unique)) {
     $folder = @($manifest.CustomFolders | Where-Object Key -eq $key)
     if ($folder.Count -ne 1) { throw "Unbekannter benutzerdefinierter Ordner: $key" }
     $targetRoot = [IO.Path]::GetFullPath([string]$folder[0].Source)
+    Assert-SetupNoReparsePoint $targetRoot
     Write-Host "Benutzerdefinierter Ordner: $targetRoot"
     foreach ($file in @($manifest.Files | Where-Object Key -eq $key)) {
         $stored = if ($file.Stored) { [string]$file.Stored } else { "$($folder[0].StoredRoot)\$($file.Relative)" }
         $source = Join-SetupSafePath $backup $stored
         $target = Join-SetupSafePath $targetRoot ([string]$file.Relative)
+        Assert-SetupNoReparsePoint $target
+        if (Test-Path -LiteralPath $target -PathType Container) { throw "Dateiziel ist bereits ein Verzeichnis: $target" }
         if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Prüfsumme stimmt nicht: $source" }
         if ((Test-Path -LiteralPath $target -PathType Leaf) -and (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $file.SHA256) { continue }
         if ($PSCmdlet.ShouldProcess($target, 'Benutzerdefinierte Datei wiederherstellen')) {
@@ -73,7 +78,9 @@ foreach ($key in @($CustomFolderKeys | Select-Object -Unique)) {
                 Copy-Item -LiteralPath $target -Destination $previous -Force
             }
             New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Quelldatei wurde nach der Vorabprüfung verändert: $source" }
             Copy-Item -LiteralPath $source -Destination $target -Force
+            if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Wiederhergestellte Datei hat eine falsche Prüfsumme: $target" }
         }
     }
 }
@@ -82,6 +89,7 @@ $developerPath = Join-Path $backup 'developer-packages.json'
 if (($VSCodeExtensions -or $PowerShellModules) -and -not (Test-Path -LiteralPath $developerPath)) { throw 'Diese Sicherung enthält kein Entwicklerpaket-Inventar.' }
 if (Test-Path -LiteralPath $developerPath) {
     $developer = Get-Content -LiteralPath $developerPath -Raw | ConvertFrom-Json
+    Assert-SetupDocumentSchema $developer 'developer-packages.json'
     if ($VSCodeExtensions) {
         foreach ($product in @($developer.VSCodeProducts | Where-Object Status -eq 'Exported')) {
             $cli = $null
@@ -124,6 +132,7 @@ $environmentPath = Join-Path $backup 'environment-variables.json'
 if (($UserEnvironment -or $MachineEnvironment) -and -not (Test-Path -LiteralPath $environmentPath)) { throw 'Diese Sicherung enthält kein Umgebungsvariablen-Inventar.' }
 if (Test-Path -LiteralPath $environmentPath) {
     $environment = Get-Content -LiteralPath $environmentPath -Raw | ConvertFrom-Json
+    Assert-SetupDocumentSchema $environment 'environment-variables.json'
     foreach ($variable in @($environment.Variables | Where-Object { ($UserEnvironment -and $_.Scope -eq 'User') -or ($MachineEnvironment -and $_.Scope -eq 'Machine') })) {
         if ($variable.Sensitive -or $null -eq $variable.Value) { Write-Warning "Sensible Umgebungsvariable wurde nicht gesichert: $($variable.Name)"; continue }
         if ($variable.Name -notmatch '^[^=\x00]+$') { throw "Ungültiger Variablenname: $($variable.Name)" }
@@ -147,6 +156,7 @@ $componentsPath = Join-Path $backup 'windows-components.json'
 if ($WindowsComponents) {
     if (-not (Test-Path -LiteralPath $componentsPath)) { throw 'Diese Sicherung enthält kein Windows-Komponenten-Inventar.' }
     $components = Get-Content -LiteralPath $componentsPath -Raw | ConvertFrom-Json
+    Assert-SetupDocumentSchema $components 'windows-components.json'
     foreach ($feature in @($components.OptionalFeatures)) {
         if ($feature.FeatureName -notmatch '^[a-zA-Z0-9_.~-]+$') { throw "Ungültiger Featurename: $($feature.FeatureName)" }
         if ($PSCmdlet.ShouldProcess($feature.FeatureName, 'Optionales Windows-Feature aktivieren')) {
@@ -165,6 +175,7 @@ $connectionsPath = Join-Path $backup 'devices-connections.json'
 if ($Connections) {
     if (-not (Test-Path -LiteralPath $connectionsPath)) { throw 'Diese Sicherung enthält kein Drucker-/Netzlaufwerk-Inventar.' }
     $connectionData = Get-Content -LiteralPath $connectionsPath -Raw | ConvertFrom-Json
+    Assert-SetupDocumentSchema $connectionData 'devices-connections.json'
     foreach ($printer in @($connectionData.Printers | Where-Object { $_.Network -and $_.ConnectionName })) {
         if ($printer.ConnectionName -notmatch '^\\\\[^\\]+\\[^\\]+$') { Write-Warning "Ungültige Druckerverbindung: $($printer.ConnectionName)"; continue }
         if ($PSCmdlet.ShouldProcess($printer.ConnectionName, 'Netzwerkdrucker verbinden')) {

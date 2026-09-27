@@ -1,3 +1,6 @@
 @echo off
-rem Keep the console open so that the result or errors remain visible.
-powershell.exe -NoProfile -NoExit -File "%~dp0Backup-WindowsSetup.ps1" %*
+rem Keep the result visible while preserving the PowerShell exit code.
+powershell.exe -NoProfile -File "%~dp0Backup-WindowsSetup.ps1" %*
+set "code=%errorlevel%"
+pause
+exit /b %code%

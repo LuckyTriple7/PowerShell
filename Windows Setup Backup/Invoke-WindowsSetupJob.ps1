@@ -16,9 +16,23 @@ $result = [ordered]@{ Status = 'Running'; Started = (Get-Date).ToString('o'); Fi
 $mutex = $null
 $locked = $false
 $exitCode = 1
+$expandedBackup = $null
+$restoreTempRoot = $null
+$restoreTempCreated = $false
+$restoreWarnings = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 function Write-JobLine {
     param($Value)
     if ($null -ne $Value) { Add-Content -LiteralPath $log -Value $Value.ToString() -Encoding UTF8 }
+}
+function Write-RestoreOutput {
+    param($Value)
+    if ($Value -is [System.Management.Automation.ErrorRecord]) { throw $Value }
+    if ($Value -is [System.Management.Automation.WarningRecord]) {
+        [void]$restoreWarnings.Add($Value.Message)
+        Write-JobLine "WARNUNG: $($Value.Message)"
+        return
+    }
+    Write-JobLine $Value
 }
 try {
     Write-JobLine ('Start: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
@@ -28,32 +42,30 @@ try {
     $mutex = [Threading.Mutex]::new($false, $mutexName)
     try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'Eine andere Sicherung oder Wiederherstellung dieses Benutzers laeuft bereits.' }
-    if ($request.Operation -eq 'Restore' -and [IO.Path]::GetExtension([string]$request.BackupPath) -ieq '.zip') {
+    if ($request.Operation -eq 'Restore' -and [IO.Path]::GetExtension([string]$request.BackupPath) -in @('.zip','.7z')) {
         $archivePath = Get-SetupAbsoluteDirectory ([string]$request.BackupPath)
-        $expandedPath = [IO.Path]::Combine((Split-Path $archivePath -Parent), [IO.Path]::GetFileNameWithoutExtension($archivePath))
-        if (Test-Path -LiteralPath (Join-Path $expandedPath 'manifest.json') -PathType Leaf) {
-            $archiveManifest = Read-SetupBackupDocument $archivePath 'manifest.json'
-            $expandedManifest = Read-SetupDocument (Join-Path $expandedPath 'manifest.json')
-            if ($archiveManifest.Computer -ne $expandedManifest.Computer -or $archiveManifest.Created -ne $expandedManifest.Created) {
-                throw "Der gleichnamige Ordner gehört nicht zum ausgewählten ZIP-Backup: $expandedPath"
-            }
-            Write-JobLine "Bereits entpacktes ZIP-Backup wird verwendet: $expandedPath"
-            $request.BackupPath = $expandedPath
-        } else {
-            Write-JobLine "ZIP-Backup wird entpackt: $archivePath -> $expandedPath"
-            $request.BackupPath = Expand-SetupZipBackup $archivePath $expandedPath
-        }
+        $archiveType = [IO.Path]::GetExtension($archivePath).TrimStart('.').ToUpperInvariant()
+        $archivePassword = Unprotect-SetupSecret ([string]$request.ProtectedArchivePassword)
+        $restoreTempRoot = Join-Path ([IO.Path]::GetTempPath()) ('WindowsSetupRestore-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $restoreTempRoot -ErrorAction Stop | Out-Null
+        $restoreTempCreated = $true
+        $privateArchive = Join-Path $restoreTempRoot ([IO.Path]::GetFileName($archivePath))
+        Copy-Item -LiteralPath $archivePath -Destination $privateArchive -ErrorAction Stop
+        $expandedBackup = Join-Path $restoreTempRoot 'ExpandedBackup'
+        Write-JobLine "$archiveType-Backup wird in einem lokalen Temp-Ordner entpackt: $expandedBackup"
+        $request.BackupPath = if ($archiveType -eq '7Z') { Expand-SetupSevenZipBackup $privateArchive $expandedBackup $archivePassword } else { Expand-SetupZipBackup $privateArchive $expandedBackup }
     }
     if ($request.Operation -eq 'Backup') {
+        $skipChocolatey = if ($request.PSObject.Properties['SkipChocolatey']) { [bool]$request.SkipChocolatey } else { $true }
         $parameters = @{
             Destination = [string]$request.Destination
             IncludeDeveloperSettings = [bool]$request.IncludeDeveloperSettings
             SkipWinget = [bool]$request.SkipWinget; SkipPython = [bool]$request.SkipPython
-            SkipChocolatey = [bool]$request.SkipChocolatey
+            SkipChocolatey = $skipChocolatey
             AcceptSourceAgreements = [bool]$request.AcceptSourceAgreements
             PythonExecutables = [string[]]@($request.PythonExecutables)
-            CustomFolders = [string[]]@($request.CustomFolders)
-            ExcludedExtensions = [string[]]@($request.ExcludedExtensions)
+            CustomFolders = [string[]]@($request.CustomFolders | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            ExcludedExtensions = [string[]]@($request.ExcludedExtensions | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             CreateArchive = [bool]$request.CreateArchive
             ArchivePassword = Unprotect-SetupSecret ([string]$request.ProtectedArchivePassword)
         }
@@ -66,42 +78,56 @@ try {
             } else { Write-JobLine $_ }
         }
     } else {
-        $requestCustomFolders = @($request.CustomFolderKeys | Where-Object { $_ })
-        $requestStoreApps = @($request.StorePackageFamilies | Where-Object { $_ })
-        $requestChocolatey = @($request.ChocolateyPackages | Where-Object { $_ })
+        $requestCustomFolders = [string[]]@($request.CustomFolderKeys | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $requestStoreApps = [string[]]@($request.StorePackageFamilies | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $requestChocolatey = [string[]]@($request.ChocolateyPackages | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or
             $request.VSCodeExtensions -or $request.PowerShellModules -or $request.UserEnvironment -or $request.MachineEnvironment -or
             $request.WindowsComponents -or $request.Connections -or $requestStoreApps.Count -gt 0 -or $requestChocolatey.Count -gt 0
+        $windowsParameters = $null; $pythonParameters = $null
         if ($hasWindowsRestore) {
-            $parameters = @{ BackupPath = [string]$request.BackupPath; Programs = [bool]$request.Programs
+            $windowsParameters = @{ BackupPath = [string]$request.BackupPath; Programs = [bool]$request.Programs
                 Settings = [bool]$request.Settings; Shortcuts = [bool]$request.Shortcuts
                 IncludeCommonStartMenu = [bool]$request.IncludeCommonStartMenu
                 UseSavedVersions = [bool]$request.UseSavedVersions; AcceptAgreements = [bool]$request.AcceptAgreements
-                PackageIds = [string[]]@($request.PackageIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-                CustomFolderKeys = [string[]]@($request.CustomFolderKeys | Where-Object { $_ })
+                PackageIds = [string[]]@($request.PackageIds | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                CustomFolderKeys = $requestCustomFolders
                 VSCodeExtensions = [bool]$request.VSCodeExtensions; PowerShellModules = [bool]$request.PowerShellModules
                 UserEnvironment = [bool]$request.UserEnvironment; MachineEnvironment = [bool]$request.MachineEnvironment
                 WindowsComponents = [bool]$request.WindowsComponents; Connections = [bool]$request.Connections
-                StorePackageFamilies = [string[]]@($request.StorePackageFamilies | Where-Object { $_ })
-                ChocolateyPackages = [string[]]@($request.ChocolateyPackages | Where-Object { $_ })
-                WhatIf = [bool]$request.Preview; Confirm = $false }
-            Write-JobLine 'Windows-Programme und Einstellungen werden verarbeitet ...'
-            & (Join-Path $PSScriptRoot 'Restore-WindowsSetup.ps1') @parameters *>&1 | ForEach-Object {
-                if ($_ -is [System.Management.Automation.ErrorRecord]) { throw $_ }
-                Write-JobLine $_
-            }
+                StorePackageFamilies = $requestStoreApps
+                ChocolateyPackages = $requestChocolatey; UndoRoot = (Join-Path $RunDirectory 'BeforeRestore')
+                Confirm = $false }
         }
         if ($request.PythonPackages) {
-            $parameters = @{ BackupPath = [string]$request.BackupPath; EnvironmentId = [string]$request.EnvironmentId
-                PythonExecutable = [string]$request.PythonExecutable; WhatIf = [bool]$request.Preview; Confirm = $false }
-            Write-JobLine 'Python-/pip-Umgebung wird verarbeitet ...'
-            & (Join-Path $PSScriptRoot 'Restore-PythonPackages.ps1') @parameters *>&1 | ForEach-Object {
-                if ($_ -is [System.Management.Automation.ErrorRecord]) { throw $_ }
-                Write-JobLine $_
+            $pythonParameters = @{ BackupPath = [string]$request.BackupPath; EnvironmentId = [string]$request.EnvironmentId
+                PythonExecutable = [string]$request.PythonExecutable; Confirm = $false }
+        }
+        if (-not [bool]$request.Preview) {
+            if ($windowsParameters) {
+                Write-JobLine 'Vollständige Vorabprüfung der Windows-Wiederherstellung ...'
+                & (Join-Path $PSScriptRoot 'Restore-WindowsSetup.ps1') @windowsParameters -WhatIf *>&1 | ForEach-Object { Write-RestoreOutput $_ }
+            }
+            if ($pythonParameters) {
+                Write-JobLine 'Vollständige Vorabprüfung der Python-Wiederherstellung ...'
+                & (Join-Path $PSScriptRoot 'Restore-PythonPackages.ps1') @pythonParameters -WhatIf *>&1 | ForEach-Object { Write-RestoreOutput $_ }
             }
         }
+        if ($windowsParameters) {
+            Write-JobLine 'Windows-Programme und Einstellungen werden verarbeitet ...'
+            & (Join-Path $PSScriptRoot 'Restore-WindowsSetup.ps1') @windowsParameters -WhatIf:([bool]$request.Preview) *>&1 | ForEach-Object { Write-RestoreOutput $_ }
+        }
+        if ($pythonParameters) {
+            Write-JobLine 'Python-/pip-Umgebung wird verarbeitet ...'
+            & (Join-Path $PSScriptRoot 'Restore-PythonPackages.ps1') @pythonParameters -WhatIf:([bool]$request.Preview) *>&1 | ForEach-Object { Write-RestoreOutput $_ }
+        }
     }
-    $result.Status = if ($result.WarningCount -gt 0) { 'CompletedWithWarnings' } elseif ($request.Preview) { 'PreviewCompleted' } else { 'Completed' }
+    if ($restoreTempCreated -and (Test-Path -LiteralPath $restoreTempRoot)) {
+        Remove-Item -LiteralPath $restoreTempRoot -Recurse -Force -ErrorAction Stop
+        $restoreTempCreated = $false; $restoreTempRoot = $null; $expandedBackup = $null
+    }
+    if ($request.Operation -eq 'Restore') { $result.WarningCount = $restoreWarnings.Count }
+    $result.Status = if ($request.Preview -and $result.WarningCount -gt 0) { 'PreviewCompletedWithWarnings' } elseif ($result.WarningCount -gt 0) { 'CompletedWithWarnings' } elseif ($request.Preview) { 'PreviewCompleted' } else { 'Completed' }
     $exitCode = if ($result.WarningCount -gt 0) { 2 } else { 0 }
     Write-JobLine "ABGESCHLOSSEN: $($result.Status)"
 } catch {
@@ -109,6 +135,12 @@ try {
     $result.Error = $_.Exception.Message
     Write-JobLine "FEHLER: $($result.Error)"
 } finally {
+    if ($restoreTempCreated -and $restoreTempRoot -and (Test-Path -LiteralPath $restoreTempRoot)) {
+        Remove-Item -LiteralPath $restoreTempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $restoreTempRoot) {
+            $result.Status = 'Failed'; $result.Error = "Temporäre entschlüsselte Restore-Daten konnten nicht entfernt werden: $restoreTempRoot"; $exitCode = 1
+        }
+    }
     $result.Finished = (Get-Date).ToString('o')
     Save-SetupDocument $result $resultPath
     if ($locked) { $mutex.ReleaseMutex() }

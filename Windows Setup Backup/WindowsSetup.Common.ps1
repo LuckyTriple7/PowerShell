@@ -1,26 +1,32 @@
 #requires -Version 5.1
 # Shared helpers. Run Backup-WindowsSetup.ps1 or Restore-WindowsSetup.ps1.
-$script:SetupBackupVersion = '1.1.0.2'
+$script:SetupBackupVersion = '1.1.1.0'
 function Write-SetupJson {
     param($Value, [string]$Path)
     ConvertTo-Json -InputObject $Value -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 function Get-SetupSevenZipPath {
-    $command = Get-Command 7z.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
     foreach ($candidate in @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
     }
+    $command = Get-Command 7z.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
     return $null
 }
 
+function Assert-SetupArchivePassword {
+    param([string]$Value)
+    # 7-Zip's own command-line parser treats every " as a quote toggle, so -p can never carry one.
+    if ($Value.Contains('"')) { throw 'Das Archivpasswort darf kein Anfuehrungszeichen (") enthalten, weil 7-Zip es ueber die Kommandozeile nicht verarbeiten kann.' }
+}
+
 function Get-SetupChocolateyPath {
-    $command = Get-Command choco.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
     foreach ($candidate in @("$env:ChocolateyInstall\bin\choco.exe", "$env:LOCALAPPDATA\UniGetUI\Chocolatey\bin\choco.exe", "$env:ProgramData\chocolatey\bin\choco.exe")) {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
     }
+    $command = Get-Command choco.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
     return $null
 }
 
@@ -66,6 +72,27 @@ function Join-SetupSafePath {
     $result = [IO.Path]::GetFullPath((Join-Path $base $Relative))
     if (-not $result.StartsWith($base, [StringComparison]::OrdinalIgnoreCase)) { throw "Pfad verlaesst den Zielordner: $Relative" }
     return $result
+}
+
+function Assert-SetupNoReparsePoint {
+    param([Parameter(Mandatory)][string]$Path)
+    $current = [IO.Path]::GetFullPath($Path)
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -and $item.LinkType) {
+                throw "Verknüpfte Pfadkomponente ist für die Wiederherstellung nicht zulässig: $current"
+            }
+        }
+        $parent = Split-Path -Path $current -Parent
+        if (-not $parent -or $parent -eq $current) { break }
+        $current = $parent
+    }
+}
+
+function Assert-SetupDocumentSchema {
+    param($Document, [string]$Name)
+    if ($null -eq $Document -or $Document.SchemaVersion -ne 1) { throw "Unbekannte oder fehlende Schemaversion: $Name" }
 }
 
 function Test-SetupFileAllowed {

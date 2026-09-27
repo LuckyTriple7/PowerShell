@@ -23,7 +23,8 @@ param(
     [switch]$WindowsComponents,
     [switch]$Connections,
     [string[]]$StorePackageFamilies = @(),
-    [string[]]$ChocolateyPackages = @()
+    [string[]]$ChocolateyPackages = @(),
+    [string]$UndoRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
@@ -50,7 +51,9 @@ foreach ($file in $selected) {
     if (-not $locations.Contains($file.Key)) { throw "Unbekannter Bereich: $($file.Key)" }
     if (-not (Test-SetupFileAllowed $file.Key $file.Relative $locations[$file.Key])) { throw "Ungültige Datei: $($file.Relative)" }
     $source = Join-SetupSafePath $backup "Files\$($file.Key)\$($file.Relative)"
-    $null = Join-SetupSafePath $locations[$file.Key].Path $file.Relative
+    $target = Join-SetupSafePath $locations[$file.Key].Path $file.Relative
+    Assert-SetupNoReparsePoint $target
+    if (Test-Path -LiteralPath $target -PathType Container) { throw "Dateiziel ist bereits ein Verzeichnis: $target" }
     if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Prüfsumme stimmt nicht: $source" }
 }
 $registry = @()
@@ -103,12 +106,14 @@ if ($Programs) {
     }
 }
 
-$undo = Join-Path $backup ('BeforeRestore-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$undo = if ($UndoRoot) { Join-Path $UndoRoot ('Windows-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) } else { Join-Path $backup ('BeforeRestore-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) }
 Write-Host "Dateien: $($selected.Count); Windows-Einstellungen: $($registry.Count)."
 $registrySaved = $false
 foreach ($file in $selected) {
     $source = Join-SetupSafePath $backup "Files\$($file.Key)\$($file.Relative)"
     $target = Join-SetupSafePath $locations[$file.Key].Path $file.Relative
+    Assert-SetupNoReparsePoint $target
+    if (Test-Path -LiteralPath $target -PathType Container) { throw "Dateiziel ist bereits ein Verzeichnis: $target" }
     if ((Test-Path -LiteralPath $target -PathType Leaf) -and
         (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $file.SHA256) { continue }
     if ($PSCmdlet.ShouldProcess($target, 'Datei wiederherstellen (vorhandene Datei vorher sichern)')) {
@@ -118,7 +123,9 @@ foreach ($file in $selected) {
             Copy-Item -LiteralPath $target -Destination $previous -Force
         }
         New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
+        if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Quelldatei wurde nach der Vorabprüfung verändert: $source" }
         Copy-Item -LiteralPath $source -Destination $target -Force
+        if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Wiederhergestellte Datei hat eine falsche Prüfsumme: $target" }
         Write-Host "Datei wiederhergestellt: $target"
     }
 }
@@ -140,7 +147,7 @@ foreach ($entry in $registry) {
 $extraParameters = @{ BackupPath = $backup; CustomFolderKeys = $CustomFolderKeys; VSCodeExtensions = $VSCodeExtensions
     PowerShellModules = $PowerShellModules; UserEnvironment = $UserEnvironment; MachineEnvironment = $MachineEnvironment
     WindowsComponents = $WindowsComponents; Connections = $Connections; StorePackageFamilies = $StorePackageFamilies
-    ChocolateyPackages = $ChocolateyPackages; UseSavedVersions = $UseSavedVersions; WhatIf = $WhatIfPreference; Confirm = $false }
+    ChocolateyPackages = $ChocolateyPackages; UseSavedVersions = $UseSavedVersions; UndoRoot = $UndoRoot; WhatIf = $WhatIfPreference; Confirm = $false }
 if ($extrasSelected) { & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') @extraParameters }
 if ($Shortcuts -and -not $IncludeCommonStartMenu) { Write-Host 'Gemeinsame Startmenü-Verknüpfungen ausgelassen. Optional: -IncludeCommonStartMenu mit Administratorrechten.' }
 if (Test-Path -LiteralPath $undo) { Write-Host "Vorherige Einstellungen/Dateien: $undo (manuelle Rücksicherung)" }

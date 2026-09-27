@@ -22,16 +22,16 @@ $requirementsPath = Join-Path $root "Python\$EnvironmentId\requirements.txt"
 if ((Get-FileHash -LiteralPath $requirementsPath -Algorithm SHA256).Hash -ne $environment.SHA256) { throw 'Pruefsumme der requirements.txt stimmt nicht.' }
 $python = (Resolve-Path -LiteralPath $PythonExecutable).ProviderPath
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'PythonExecutable muss auf eine vorhandene python.exe zeigen.' }
+$targetVersion = (& $python --version) -join ''
+if ($LASTEXITCODE -ne 0) { throw 'Python-Version konnte nicht gelesen werden.' }
+$savedMinor = [regex]::Match($environment.Version, 'Python (\d+\.\d+)').Groups[1].Value
+$targetMinor = [regex]::Match($targetVersion, 'Python (\d+\.\d+)').Groups[1].Value
+if (-not $savedMinor -or $savedMinor -ne $targetMinor) {
+    throw "Python-Version passt nicht: gesichert $($environment.Version), Ziel $targetVersion. Passenden Interpreter verwenden."
+}
 Write-Host "Quelle: $EnvironmentId / $($environment.Version) / $($environment.PackageCount) Pakete"
 Write-Host "Ziel: $python"
 if ($PSCmdlet.ShouldProcess($python, "pip-Pakete aus $requirementsPath installieren")) {
-    $targetVersion = (& $python --version) -join ''
-    if ($LASTEXITCODE -ne 0) { throw 'Python-Version konnte nicht gelesen werden.' }
-    $savedMinor = [regex]::Match($environment.Version, 'Python (\d+\.\d+)').Groups[1].Value
-    $targetMinor = [regex]::Match($targetVersion, 'Python (\d+\.\d+)').Groups[1].Value
-    if (-not $savedMinor -or $savedMinor -ne $targetMinor) {
-        throw "Python-Version passt nicht: gesichert $($environment.Version), Ziel $targetVersion. Passenden Interpreter verwenden."
-    }
     Write-Host 'Paketinstallation laeuft; Downloads koennen einige Minuten dauern.' -ForegroundColor Cyan
     & $python -m pip --disable-pip-version-check --no-input install --requirement $requirementsPath
     if ($LASTEXITCODE -ne 0) { throw "pip meldet Exitcode $LASTEXITCODE. Einige Pakete koennen bereits installiert sein; kein automatisches Rollback." }

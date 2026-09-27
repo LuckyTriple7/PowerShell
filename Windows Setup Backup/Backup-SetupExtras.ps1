@@ -15,7 +15,7 @@ function Get-PersistentEnvironment {
     param([string]$Scope, [string]$RegistryPath)
     $key = Get-Item -LiteralPath $RegistryPath -ErrorAction Stop
     foreach ($name in $key.GetValueNames()) {
-        $sensitive = $name -match '(?i)(password|passwd|token|secret|credential|api.?key|private.?key)'
+        $sensitive = $name -match '(?i)(password|passwd|token|secret|credential|api.?key|private.?key|connection.?string|(^|[_-])(auth|pat|sas|key)([_-]|$))'
         [pscustomobject]@{
             Scope = $Scope; Name = $name; Sensitive = $sensitive
             Value = if ($sensitive) { $null } else { $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
@@ -38,7 +38,7 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
     } catch { $componentsError = $_.Exception.Message; Add-ExtraWarning "Windows-Komponenten konnten nicht vollständig inventarisiert werden: $_" }
 } else {
     $componentsError = 'Windows-Features und Capabilities wurden übersprungen: Für dieses Teilinventar sind Administratorrechte erforderlich.'
-    Write-Warning $componentsError
+    Write-Host $componentsError
 }
 Write-SetupJson @{ SchemaVersion = 1; OptionalFeatures = $features; Capabilities = $capabilities; Error = $componentsError } (Join-Path $BackupPath 'windows-components.json')
 
@@ -99,7 +99,10 @@ if ($SkipChocolatey) { $chocolatey.Status = 'Skipped' }
 if ($chocoPath) {
     $chocolatey.Executable = $chocoPath
     try {
-        $chocolatey.Version = [string](& $chocoPath --version 2>&1 | Select-Object -First 1)
+        $versionLines = @(& $chocoPath --version 2>&1)
+        $versionExit = $LASTEXITCODE
+        if ($versionExit -ne 0) { throw "Versionsabfrage meldet Exitcode $versionExit" }
+        $chocolatey.Version = [string]($versionLines | Select-Object -First 1)
         $majorVersion = 0; [void][int]::TryParse(($chocolatey.Version -split '\.')[0], [ref]$majorVersion)
         $arguments = if ($majorVersion -ge 2) { @('list','--limit-output') } else { @('list','--local-only','--limit-output') }
         $lines = @(& $chocoPath @arguments 2>&1)

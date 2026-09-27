@@ -149,21 +149,23 @@ $archiveHint += ' Das Windows-Feature-Inventar wird nur bei als Administrator ge
 Add-UiWide $backupTable (New-UiLabel $archiveHint) 11
 
 # Restore tab
-$restoreTable = New-UiTable @(38,110,45,0,0,28,110,0,35,35,38)
+$restoreTable = New-UiTable @(38,38,110,45,0,0,28,110,0,35,35,38)
 $restoreTab.Controls.Add($restoreTable)
 $restoreRoot = [Windows.Forms.TextBox]::new(); $restoreRoot.Dock = 'Fill'; $restoreRoot.Text = $destination.Text
 $restoreTable.Controls.Add((New-UiLabel 'Backup-Ordner / Quelle'),0,0); $restoreTable.Controls.Add($restoreRoot,1,0)
 $browseRestore = New-UiButton 'Auswählen ...' 105; $restoreTable.Controls.Add($browseRestore,2,0)
+$restoreArchivePassword = [Windows.Forms.TextBox]::new(); $restoreArchivePassword.Dock = 'Fill'; $restoreArchivePassword.UseSystemPasswordChar = $true
+$restoreTable.Controls.Add((New-UiLabel 'Archivpasswort'),0,1); $restoreTable.Controls.Add($restoreArchivePassword,1,1); $restoreTable.SetColumnSpan($restoreArchivePassword,2)
 $grid = [Windows.Forms.DataGridView]::new()
 $grid.Dock = 'Fill'; $grid.ReadOnly = $true; $grid.AllowUserToAddRows = $false; $grid.AllowUserToDeleteRows = $false
 $grid.AllowUserToResizeRows = $false; $grid.MultiSelect = $false; $grid.RowHeadersVisible = $false
 $grid.SelectionMode = 'FullRowSelect'; $grid.AutoSizeColumnsMode = 'Fill'; $grid.BackgroundColor = [Drawing.Color]::White
 foreach ($column in @(@('Date','Zeitpunkt'),@('Computer','Rechner'),@('Winget','WinGet'),@('Python','pip-Umgebungen'),@('Files','Dateien'),@('State','Status'))) { [void]$grid.Columns.Add($column[0],$column[1]) }
 $grid.Columns['Date'].FillWeight = 150
-Add-UiWide $restoreTable $grid 1
+Add-UiWide $restoreTable $grid 2
 $backupDetails = New-UiLabel 'Quelle wählen oder Liste aktualisieren. Es werden der Ordner selbst und seine direkten Unterordner geprüft.'
-$restoreTable.Controls.Add($backupDetails,0,2); $restoreTable.SetColumnSpan($backupDetails,2)
-$browseRestoreZip = New-UiButton 'ZIP ...' 105; $restoreTable.Controls.Add($browseRestoreZip,2,2)
+$restoreTable.Controls.Add($backupDetails,0,3); $restoreTable.SetColumnSpan($backupDetails,2)
+$browseRestoreZip = New-UiButton 'Archiv ...' 105; $restoreTable.Controls.Add($browseRestoreZip,2,3)
 $restoreFlags = New-UiFlow
 $restorePrograms = New-UiCheck 'WinGet-Programme'
 $restoreSettings = New-UiCheck 'Einstellungen'
@@ -173,17 +175,17 @@ $restorePip = New-UiCheck 'Python / pip'
 $restoreVersions = New-UiCheck 'Gespeicherte WinGet-Versionen'
 $restoreAgreements = New-UiCheck 'Paket-/Quellenbedingungen akzeptieren'
 foreach ($control in @($restorePrograms,$restoreSettings,$restoreShortcuts,$restoreCommon,$restorePip,$restoreVersions,$restoreAgreements)) { $restoreFlags.Controls.Add($control) }
-Add-UiWide $restoreTable $restoreFlags 3
+Add-UiWide $restoreTable $restoreFlags 4
 $packageLabel = New-UiLabel 'WinGet-Pakete zur Wiederherstellung (alle sind zunächst ausgewählt):'
-Add-UiWide $restoreTable $packageLabel 5
+Add-UiWide $restoreTable $packageLabel 6
 $packageList = [Windows.Forms.CheckedListBox]::new(); $packageList.Dock = 'Fill'; $packageList.CheckOnClick = $true
 $packageList.HorizontalScrollbar = $true; $packageList.DisplayMember = 'Label'
-Add-UiWide $restoreTable $packageList 6
+Add-UiWide $restoreTable $packageList 7
 $packageButtons = New-UiFlow
 $selectAllPackages = New-UiButton 'Alle auswählen' 145
 $selectNoPackages = New-UiButton 'Keine auswählen' 145
 foreach ($control in @($selectAllPackages,$selectNoPackages)) { $packageButtons.Controls.Add($control) }
-Add-UiWide $restoreTable $packageButtons 7
+Add-UiWide $restoreTable $packageButtons 8
 $extrasTable = New-UiTable @(45,0,28,85,28,100,28,100,0,38)
 $extrasTab.Controls.Add($extrasTable)
 $extrasSelection = New-UiLabel 'Zuerst im Reiter Wiederherstellung eine Sicherung auswählen.'
@@ -218,10 +220,10 @@ foreach ($control in @($previewExtras,$startExtras)) { $extrasButtons.Controls.A
 Add-UiWide $extrasTable $extrasButtons 1
 Add-UiWide $extrasTable (New-UiLabel 'Systemvariablen und Windows-Komponenten benötigen beim tatsächlichen Wiederherstellen Administratorrechte.') 9
 $pipEnvironment = [Windows.Forms.ComboBox]::new(); $pipEnvironment.DropDownStyle = 'DropDownList'; $pipEnvironment.Dock = 'Fill'; $pipEnvironment.DisplayMember = 'Label'
-$restoreTable.Controls.Add((New-UiLabel 'pip-Umgebung'),0,8); $restoreTable.Controls.Add($pipEnvironment,1,8); $restoreTable.SetColumnSpan($pipEnvironment,2)
+$restoreTable.Controls.Add((New-UiLabel 'pip-Umgebung'),0,9); $restoreTable.Controls.Add($pipEnvironment,1,9); $restoreTable.SetColumnSpan($pipEnvironment,2)
 $targetPython = [Windows.Forms.TextBox]::new(); $targetPython.Dock = 'Fill'
-$restoreTable.Controls.Add((New-UiLabel 'Ziel: python.exe'),0,9); $restoreTable.Controls.Add($targetPython,1,9)
-$browsePython = New-UiButton 'Datei ...' 105; $restoreTable.Controls.Add($browsePython,2,9)
+$restoreTable.Controls.Add((New-UiLabel 'Ziel: python.exe'),0,10); $restoreTable.Controls.Add($targetPython,1,10)
+$browsePython = New-UiButton 'Datei ...' 105; $restoreTable.Controls.Add($browsePython,2,10)
 $restoreButtons = New-UiFlow
 $refreshBackups = New-UiButton 'Liste aktualisieren' 155
 $previewRestore = New-UiButton 'Vorschau (WhatIf)' 155
@@ -229,8 +231,8 @@ $startRestore = New-UiButton 'Wiederherstellen' 160
 $deleteBackup = New-UiButton 'Sicherung löschen' 165
 $deleteBackup.Enabled = $false
 foreach ($control in @($refreshBackups,$previewRestore,$startRestore,$deleteBackup)) { $restoreButtons.Controls.Add($control) }
-Add-UiWide $restoreTable $restoreButtons 4
-Add-UiWide $restoreTable (New-UiLabel 'Reihenfolge: WinGet zuerst, danach Dateien und Einstellungen. Weitere Optionen befinden sich im Reiter Zusatzbereiche.') 10
+Add-UiWide $restoreTable $restoreButtons 5
+Add-UiWide $restoreTable (New-UiLabel 'Reihenfolge: WinGet zuerst, danach Dateien und Einstellungen. Weitere Optionen befinden sich im Reiter Zusatzbereiche.') 11
 
 # Scheduled task tab
 $scheduleTable = New-UiTable @(55,36,36,36,38,64,0,98)
@@ -277,7 +279,7 @@ function Save-UiPreferences {
         Winget = $backupWinget.Checked; Chocolatey = $backupChocolatey.Checked; Python = $backupPython.Checked; Developer = $backupDeveloper.Checked
         Agreements = $backupAgreements.Checked; ExtraPython = $extraPython.Text
         CustomFolders = $customFolders.Text; ExcludedExtensions = $excludedExtensions.Text; CreateArchive = $createArchive.Checked
-        ProtectedArchivePassword = Protect-SetupSecret $archivePassword.Text
+        ProtectedArchivePassword = Protect-SetupSecret $archivePassword.Text; ProtectedRestoreArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
         Frequency = $frequency.SelectedIndex; Day = $weekDay.SelectedIndex; Time = $scheduleTime.Value.ToString('HH:mm'); Battery = $allowBattery.Checked
     } $settingsPath
 }
@@ -290,7 +292,7 @@ function New-UiBackupRequest {
         PythonExecutables = @($extraPython.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         CustomFolders = @($customFolders.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         ExcludedExtensions = @($excludedExtensions.Text -split '[,;\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        CreateArchive = $createArchive.Checked; ProtectedArchivePassword = Protect-SetupSecret $archivePassword.Text
+        CreateArchive = $createArchive.Checked; ProtectedArchivePassword = $(if ($createArchive.Checked -and $sevenZipPath) { Protect-SetupSecret $archivePassword.Text } else { '' })
     }
     if ($request.SkipPython) { $request.PythonExecutables = @() }
     Test-SetupRequest $request
@@ -310,27 +312,31 @@ function New-UiRestoreRequest {
         Programs = (-not $ExtrasOnly -and $restorePrograms.Checked); Settings = (-not $ExtrasOnly -and $restoreSettings.Checked); Shortcuts = (-not $ExtrasOnly -and $restoreShortcuts.Checked)
         IncludeCommonStartMenu = (-not $ExtrasOnly -and $restoreCommon.Checked); UseSavedVersions = $restoreVersions.Checked
         AcceptAgreements = $restoreAgreements.Checked; PythonPackages = (-not $ExtrasOnly -and $restorePip.Checked)
-        PackageIds = $(if ($ExtrasOnly) { @() } else { $packageIds })
-        CustomFolderKeys = $(if ($ExtrasOnly) { $customKeys } else { @() }); StorePackageFamilies = $(if ($ExtrasOnly) { $storeFamilies } else { @() })
-        ChocolateyPackages = $(if ($ExtrasOnly -and $restoreChocolatey.Checked) { $chocolateyPackages } else { @() })
+        PackageIds = [string[]]@(); CustomFolderKeys = [string[]]@(); StorePackageFamilies = [string[]]@(); ChocolateyPackages = [string[]]@()
         VSCodeExtensions = ($ExtrasOnly -and $restoreVSCode.Checked); PowerShellModules = ($ExtrasOnly -and $restoreModules.Checked)
         UserEnvironment = ($ExtrasOnly -and $restoreUserEnvironment.Checked); MachineEnvironment = ($ExtrasOnly -and $restoreMachineEnvironment.Checked)
         WindowsComponents = ($ExtrasOnly -and $restoreWindowsComponents.Checked); Connections = ($ExtrasOnly -and $restoreConnections.Checked)
         EnvironmentId = $(if (-not $ExtrasOnly -and $pipEnvironment.SelectedItem) { $pipEnvironment.SelectedItem.Id } else { '' })
         PythonExecutable = $(if ($ExtrasOnly) { '' } else { $targetPython.Text.Trim() })
+        ProtectedArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
     }
+    if ($ExtrasOnly) {
+        $request.CustomFolderKeys = [string[]]$customKeys
+        $request.StorePackageFamilies = [string[]]$storeFamilies
+        if ($restoreChocolatey.Checked) { $request.ChocolateyPackages = [string[]]$chocolateyPackages }
+    } else { $request.PackageIds = [string[]]$packageIds }
     Test-SetupRequest $request
     return $request
 }
 function Update-UiBackupList {
-    $entries = @(Get-SetupBackupEntries $restoreRoot.Text | Sort-Object Created -Descending)
+    $entries = @(Get-SetupBackupEntries $restoreRoot.Text $restoreArchivePassword.Text | Sort-Object Created, IsArchive -Descending)
     $grid.Rows.Clear(); $script:selectedBackup = $null; $pipEnvironment.Items.Clear(); $packageList.Items.Clear(); $customRestoreList.Items.Clear(); $chocolateyRestoreList.Items.Clear(); $storeRestoreList.Items.Clear(); $targetPython.Clear(); $deleteBackup.Enabled = $false
     $restoreChocolatey.Checked = $false; $restoreChocolatey.Enabled = $false; $chocolateyRestoreList.Enabled = $false
     $extrasSelection.Text = 'Zuerst im Reiter Wiederherstellung eine Sicherung auswählen.'
     foreach ($entry in $entries) {
         $date = if ($entry.Error) { '-' } else { $entry.Created.ToString('dd.MM.yyyy HH:mm:ss') }
         $state = if ($entry.Error) { 'Nicht lesbar' } elseif ($entry.Warnings.Count -gt 0) { "$($entry.Warnings.Count) Warnungen" } else { 'Erfasst' }
-        if ($entry.IsArchive -and -not $entry.Error) { $state = "ZIP | $state" }
+        if ($entry.IsArchive -and -not $entry.Error) { $state = "$($entry.ArchiveType) | $state" }
         $rowIndex = $grid.Rows.Add($date, $entry.Computer, $(if ($entry.Winget) { 'Ja' } else { 'Nein' }), $entry.Python.Count, $entry.Files, $state)
         $grid.Rows[$rowIndex].Tag = $entry
     }
@@ -346,11 +352,11 @@ function Update-UiSelection {
     if (-not $script:selectedBackup) { return }
     if ($script:selectedBackup.Error) { $backupDetails.Text = $script:selectedBackup.Error; return }
     $deleteBackup.Enabled = $true
-    $sourceType = if ($script:selectedBackup.IsArchive) { 'ZIP-Backup; wird vor der Wiederherstellung neben dem Archiv entpackt.' } else { 'Backup-Ordner' }
+    $sourceType = if ($script:selectedBackup.IsArchive) { "$($script:selectedBackup.ArchiveType)-Backup; wird nur temporär unter %TEMP% entpackt." } else { 'Backup-Ordner' }
     $backupDetails.Text = $script:selectedBackup.Path + "`r`n" + "$sourceType | $($script:selectedBackup.Files) Dateien; $($script:selectedBackup.Warnings.Count) Warnungen."
     $extrasSelection.Text = "Ausgewählte Sicherung: $($script:selectedBackup.Path)"
     if ($script:selectedBackup.Winget) {
-        $wingetDocument = Read-SetupBackupDocument $script:selectedBackup.Path 'winget-packages.json'
+        $wingetDocument = Read-SetupBackupDocument $script:selectedBackup.Path 'winget-packages.json' $restoreArchivePassword.Text
         foreach ($package in @($wingetDocument.Sources | ForEach-Object { $_.Packages } | Sort-Object PackageIdentifier)) {
             $item = [pscustomobject]@{ Id = [string]$package.PackageIdentifier; Version = [string]$package.Version
                 Label = "$($package.PackageIdentifier)  |  $($package.Version)" }
@@ -358,10 +364,11 @@ function Update-UiSelection {
         }
     }
     foreach ($folder in @($script:selectedBackup.Manifest.CustomFolders | Where-Object { $_ -and $_.Key })) {
-        [void]$customRestoreList.Items.Add([pscustomobject]@{ Key = [string]$folder.Key; Label = "$($folder.Source)  |  $($folder.FileCount) Dateien" }, $true)
+        [void]$customRestoreList.Items.Add([pscustomobject]@{ Key = [string]$folder.Key; Label = "$($folder.Source)  |  $($folder.FileCount) Dateien" }, $false)
     }
-    if (Test-SetupBackupDocument $script:selectedBackup.Path 'package-managers.json') {
-        $managerData = Read-SetupBackupDocument $script:selectedBackup.Path 'package-managers.json'
+    $managerData = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'package-managers.json' $restoreArchivePassword.Text
+    if ($managerData) {
+        Assert-SetupDocumentSchema $managerData 'package-managers.json'
         $chocoPackages = @($managerData.Chocolatey.Packages)
         $chocoIds = @($chocoPackages | ForEach-Object { [string]$_.Id })
         foreach ($package in $chocoPackages) {
@@ -373,8 +380,8 @@ function Update-UiSelection {
     }
     $restoreChocolatey.Enabled = $chocolateyRestoreList.Items.Count -gt 0
     $chocolateyRestoreList.Enabled = $restoreChocolatey.Checked
-    if (Test-SetupBackupDocument $script:selectedBackup.Path 'store-apps.json') {
-        $storeDocument = Read-SetupBackupDocument $script:selectedBackup.Path 'store-apps.json'
+    $storeDocument = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'store-apps.json' $restoreArchivePassword.Text
+    if ($storeDocument) {
         $storeApps = @($storeDocument.GetEnumerator() | Where-Object {
             $_.PackageFamilyName -and -not [bool]$_.IsFramework -and -not [bool]$_.IsResourcePackage -and -not [bool]$_.NonRemovable
         } | Sort-Object PackageFamilyName -Unique)
@@ -382,12 +389,17 @@ function Update-UiSelection {
             [void]$storeRestoreList.Items.Add([pscustomobject]@{ Family = [string]$app.PackageFamilyName; Label = "$($app.Name)  |  $($app.Version)" }, $false)
         }
     }
-    $developerAvailable = Test-SetupBackupDocument $script:selectedBackup.Path 'developer-packages.json'
-    $environmentAvailable = Test-SetupBackupDocument $script:selectedBackup.Path 'environment-variables.json'
+    $developerData = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'developer-packages.json' $restoreArchivePassword.Text
+    $environmentData = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'environment-variables.json' $restoreArchivePassword.Text
+    if ($developerData) { Assert-SetupDocumentSchema $developerData 'developer-packages.json' }
+    if ($environmentData) { Assert-SetupDocumentSchema $environmentData 'environment-variables.json' }
+    $developerAvailable = $null -ne $developerData
+    $environmentAvailable = $null -ne $environmentData
     $componentsAvailable = $false; $connectionsAvailable = $false
-    if (Test-SetupBackupDocument $script:selectedBackup.Path 'windows-components.json') { $componentData = Read-SetupBackupDocument $script:selectedBackup.Path 'windows-components.json'; $componentsAvailable = @($componentData.OptionalFeatures).Count + @($componentData.Capabilities).Count -gt 0 }
-    if (Test-SetupBackupDocument $script:selectedBackup.Path 'devices-connections.json') { $connectionData = Read-SetupBackupDocument $script:selectedBackup.Path 'devices-connections.json'; $connectionsAvailable = @($connectionData.MappedDrives).Count + @($connectionData.Printers | Where-Object Network).Count -gt 0 }
-    if ($developerAvailable) { $developerData = Read-SetupBackupDocument $script:selectedBackup.Path 'developer-packages.json' }
+    $componentData = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'windows-components.json' $restoreArchivePassword.Text
+    $connectionData = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'devices-connections.json' $restoreArchivePassword.Text
+    if ($componentData) { Assert-SetupDocumentSchema $componentData 'windows-components.json'; $componentsAvailable = @($componentData.OptionalFeatures).Count + @($componentData.Capabilities).Count -gt 0 }
+    if ($connectionData) { Assert-SetupDocumentSchema $connectionData 'devices-connections.json'; $connectionsAvailable = @($connectionData.MappedDrives).Count + @($connectionData.Printers | Where-Object Network).Count -gt 0 }
     $restoreVSCode.Enabled = $developerAvailable -and @($developerData.VSCodeProducts | ForEach-Object { $_.Extensions }).Count -gt 0
     $restoreModules.Enabled = $developerAvailable -and @($developerData.PowerShellModules).Count -gt 0
     $restoreUserEnvironment.Enabled = $environmentAvailable; $restoreMachineEnvironment.Enabled = $environmentAvailable
@@ -448,7 +460,7 @@ $openDestination.Add_Click({ try {
 } catch { Show-UiError $_ } })
 $browseRestore.Add_Click({ try { Select-UiFolder $restoreRoot; Update-UiBackupList } catch { Show-UiError $_ } })
 $browseRestoreZip.Add_Click({
-    $dialog = [Windows.Forms.OpenFileDialog]::new(); $dialog.Filter = 'ZIP-Backups (*.zip)|*.zip'; $dialog.CheckFileExists = $true
+    $dialog = [Windows.Forms.OpenFileDialog]::new(); $dialog.Filter = 'Backup-Archive (*.zip;*.7z)|*.zip;*.7z|ZIP-Backups (*.zip)|*.zip|7z-Backups (*.7z)|*.7z'; $dialog.CheckFileExists = $true
     try { if ($dialog.ShowDialog($form) -eq 'OK') { $restoreRoot.Text = $dialog.FileName; Update-UiBackupList } } catch { Show-UiError $_ } finally { $dialog.Dispose() }
 })
 $refreshBackups.Add_Click({ try { Update-UiBackupList } catch { Show-UiError $_ } })
@@ -458,12 +470,12 @@ $deleteBackup.Add_Click({
         if (-not $script:selectedBackup -or $script:selectedBackup.Error) { throw 'Zuerst eine gültige Sicherung auswählen.' }
         $selectedPath = $script:selectedBackup.Path
         $sourceRoot = $restoreRoot.Text
-        $deleteDescription = if ($script:selectedBackup.IsArchive) { 'Nur die ausgewählte ZIP-Datei wird entfernt. Ein separat entpackter Backup-Ordner bleibt erhalten.' } else { 'Der gesamte ausgewählte Backup-Ordner wird entfernt. Ein daneben vorhandenes ZIP-Backup bleibt erhalten.' }
+        $deleteDescription = if ($script:selectedBackup.IsArchive) { 'Nur die ausgewählte Archivdatei wird entfernt. Ein separat entpackter Backup-Ordner bleibt erhalten.' } else { 'Der gesamte ausgewählte Backup-Ordner wird entfernt. Ein daneben vorhandenes Archiv bleibt erhalten.' }
         $question = "Diese Sicherung dauerhaft löschen?`r`n`r`n$selectedPath`r`n`r`n$deleteDescription Liegt sie in OneDrive, wird die Löschung synchronisiert."
         if ([Windows.Forms.MessageBox]::Show($form,$question,'Sicherung löschen','YesNo','Warning','Button2') -ne 'Yes') { return }
         $tabs.Enabled = $false; $form.UseWaitCursor = $true
         $status.Text = 'Sicherung wird gelöscht ...'; $status.Refresh()
-        Remove-SetupBackup -BackupPath $selectedPath -SourceRoot $sourceRoot -Confirm:$false
+        Remove-SetupBackup -BackupPath $selectedPath -SourceRoot $sourceRoot -ArchivePassword $restoreArchivePassword.Text -Confirm:$false
         $output.AppendText("`r`nSicherung gelöscht: $selectedPath")
         if ($sourceRoot.TrimEnd('\') -eq $selectedPath.TrimEnd('\')) { $restoreRoot.Text = Split-Path -Path $selectedPath -Parent }
         Update-UiBackupList
@@ -548,6 +560,7 @@ $timer.Add_Tick({
         $status.Text = 'Aktion läuft seit {0:mm\:ss}. Details im Ausgabefenster.' -f $elapsed
         if ($script:operation.Process.HasExited) {
             $code = $script:operation.Process.ExitCode
+            $completedRequest = $script:operation.Request
             $script:operation.Process.Dispose(); $script:operation = $null
             $tabs.Enabled = $true; $progress.Style = 'Continuous'
             foreach ($nativeLog in @('native-output.log','native-errors.log')) {
@@ -558,7 +571,8 @@ $timer.Add_Tick({
             $result = if (Test-Path -LiteralPath $resultPath) { Read-SetupDocument $resultPath } else { [pscustomobject]@{ Status = 'Failed'; Error = "Prozess mit Exitcode $code beendet; kein Abschlussbericht. Siehe Ausgabe." } }
             $message = switch ($result.Status) {
                 'Completed' { 'Aktion erfolgreich abgeschlossen.' }
-                'CompletedWithWarnings' { "Sicherung mit $($result.WarningCount) Warnungen abgeschlossen. Bitte das Protokoll prüfen." }
+                'CompletedWithWarnings' { "$(if ($completedRequest.Operation -eq 'Backup') { 'Sicherung' } else { 'Wiederherstellung' }) mit $($result.WarningCount) Warnungen abgeschlossen. Bitte das Protokoll prüfen." }
+                'PreviewCompletedWithWarnings' { "Vorschau mit $($result.WarningCount) Warnungen abgeschlossen. Bitte das Protokoll prüfen." }
                 'PreviewCompleted' { 'Vorschau abgeschlossen. Es wurde nichts wiederhergestellt.' }
                 default { "Aktion fehlgeschlagen: $($result.Error)" }
             }
@@ -569,9 +583,9 @@ $timer.Add_Tick({
                 try { Update-UiBackupList } catch { $backupDetails.Text = $_.Exception.Message }
             }
             $status.Text = $message.Replace("`r`n",' ')
-            $status.ForeColor = if ($result.Status -eq 'Failed') { [Drawing.Color]::Firebrick } elseif ($result.Status -eq 'CompletedWithWarnings') { [Drawing.Color]::DarkOrange } else { [Drawing.Color]::ForestGreen }
+            $status.ForeColor = if ($result.Status -eq 'Failed') { [Drawing.Color]::Firebrick } elseif ($result.Status -in @('CompletedWithWarnings','PreviewCompletedWithWarnings')) { [Drawing.Color]::DarkOrange } else { [Drawing.Color]::ForestGreen }
             $progress.Value = if ($result.Status -eq 'Failed') { 0 } else { 100 }
-            [void][Windows.Forms.MessageBox]::Show($form,$message,'Aktion beendet','OK',$(if ($result.Status -eq 'Failed') { 'Error' } elseif ($result.Status -eq 'CompletedWithWarnings') { 'Warning' } else { 'Information' }))
+            [void][Windows.Forms.MessageBox]::Show($form,$message,'Aktion beendet','OK',$(if ($result.Status -eq 'Failed') { 'Error' } elseif ($result.Status -in @('CompletedWithWarnings','PreviewCompletedWithWarnings')) { 'Warning' } else { 'Information' }))
         }
     } catch { $status.Text = 'Anzeige konnte nicht aktualisiert werden: ' + $_.Exception.Message }
 })
@@ -591,6 +605,9 @@ if (Test-Path -LiteralPath $settingsPath) {
         if (-not [string]::IsNullOrEmpty([string]$saved.ProtectedArchivePassword)) {
             $archivePassword.Text = Unprotect-SetupSecret ([string]$saved.ProtectedArchivePassword)
         }
+        if (-not [string]::IsNullOrEmpty([string]$saved.ProtectedRestoreArchivePassword)) {
+            $restoreArchivePassword.Text = Unprotect-SetupSecret ([string]$saved.ProtectedRestoreArchivePassword)
+        } elseif ($archivePassword.Text) { $restoreArchivePassword.Text = $archivePassword.Text }
         $frequency.SelectedIndex = [Math]::Max(0,[Math]::Min(1,[int]$saved.Frequency))
         $weekDay.SelectedIndex = [Math]::Max(0,[Math]::Min(6,[int]$saved.Day))
         if ($saved.Time) { $scheduleTime.Value = [datetime]::Today.Add([timespan]::Parse($saved.Time)) }
@@ -615,7 +632,8 @@ if ($ValidateOnly) {
         BackupChocolateyEnabled = $backupChocolatey.Enabled; BackupChocolateyChecked = $backupChocolatey.Checked
         PackageItems = $packageList.Items.Count; ChocolateyItems = $chocolateyRestoreList.Items.Count; ChocolateyChecked = $chocolateyRestoreList.CheckedItems.Count
         ChocolateyOptionEnabled = $restoreChocolatey.Enabled; ChocolateyOptionChecked = $restoreChocolatey.Checked; ChocolateyListEnabled = $chocolateyRestoreList.Enabled
-        CustomFolderItems = $customRestoreList.Items.Count; StoreItems = $storeRestoreList.Items.Count; SelectedIsArchive = [bool]$script:selectedBackup.IsArchive }
+        CustomFolderItems = $customRestoreList.Items.Count; StoreItems = $storeRestoreList.Items.Count; SelectedIsArchive = [bool]$script:selectedBackup.IsArchive
+        SelectedArchiveType = [string]$script:selectedBackup.ArchiveType }
     $timer.Dispose(); $form.Dispose()
     return
 }

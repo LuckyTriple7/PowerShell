@@ -26,6 +26,7 @@ $logPath = $null
 $stagingRoot = $null
 $backup = $null
 $finalPath = $null
+$publishingPath = $null
 function Write-BackupStatus {
     param([string]$Message, [ConsoleColor]$Color = 'Gray')
     $line = '[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $Message
@@ -75,6 +76,7 @@ $excluded = @($ExcludedExtensions | ForEach-Object {
     if ($value) { $value.ToLowerInvariant() }
 } | Where-Object { $_ } | Select-Object -Unique)
 if ($ArchivePassword -and -not $CreateArchive) { throw 'Ein Archivpasswort erfordert -CreateArchive.' }
+Assert-SetupArchivePassword $ArchivePassword
 
 # Read uninstall keys directly: Win32_Product can trigger MSI repair operations.
 Write-BackupStep 1 'Installierte Programme erfassen ...'
@@ -153,9 +155,13 @@ foreach ($key in $locations.Keys) {
     $countBefore = $files.Count
     try {
         $recursive = $key -in @('StartMenuUser','StartMenuCommon','VSCodeSnippets')
+        foreach ($linkedDirectory in @(Get-ChildItem -LiteralPath $location.Path -Directory -Recurse:$recursive -Force -ErrorAction Stop | Where-Object LinkType)) {
+            throw "Verknüpfter Quellordner wird nicht gesichert: $($linkedDirectory.FullName)"
+        }
         $sourceFiles = @(Get-ChildItem -LiteralPath $location.Path -File -Recurse:$recursive -Force)
         $fileNumber = 0
         foreach ($file in $sourceFiles) {
+            if ($file.LinkType -and $file.LinkType -ne 'HardLink') { Add-BackupWarning "Verknüpfte Quelldatei wurde ausgelassen: $($file.FullName)"; continue }
             $fileNumber++
             $relative = $file.FullName.Substring($location.Path.TrimEnd('\').Length + 1)
             if (-not (Test-SetupFileAllowed $key $relative $location)) { continue }
@@ -183,9 +189,13 @@ foreach ($source in @($CustomFolders | Select-Object -Unique)) {
     $countBefore = $files.Count
     Write-BackupStatus "Benutzerdefinierter Ordner: $source"
     try {
+        foreach ($linkedDirectory in @(Get-ChildItem -LiteralPath $source -Directory -Recurse -Force -ErrorAction Stop | Where-Object LinkType)) {
+            throw "Verknüpfter Quellordner wird nicht gesichert: $($linkedDirectory.FullName)"
+        }
         $sourceFiles = @(Get-ChildItem -LiteralPath $source -File -Recurse -Force -ErrorAction Stop)
         $relativeStart = if ($source.EndsWith('\')) { $source.Length } else { $source.Length + 1 }
         foreach ($file in $sourceFiles) {
+            if ($file.LinkType) { Add-BackupWarning "Verknüpfte Quelldatei wurde ausgelassen: $($file.FullName)"; continue }
             $relative = $file.FullName.Substring($relativeStart)
             if ($excluded -contains $file.Extension.ToLowerInvariant()) { continue }
             try {
@@ -224,6 +234,13 @@ try {
 } catch { Add-BackupWarning "Startlayout nicht exportiert: $_" }
 
 Write-BackupStep 8 'Sicherungsverzeichnis und Abschlussbericht schreiben ...'
+$payloadFiles = @(Get-ChildItem -LiteralPath $backup -File -Recurse -Force -ErrorAction Stop)
+[long]$payloadBytes = 0
+foreach ($payloadFile in $payloadFiles) {
+    if ($payloadFile.Length -gt 20GB) { throw "Eine Sicherungsdatei überschreitet 20 GB: $($payloadFile.FullName)" }
+    $payloadBytes += $payloadFile.Length
+}
+if ($payloadFiles.Count -gt 249999 -or $payloadBytes -gt 100GB) { throw 'Die Sicherung überschreitet die unterstützte Datei- oder Gesamtgröße.' }
 $windows = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $manifest = [ordered]@{
     SchemaVersion = 1; ApplicationVersion = $script:SetupBackupVersion; Created = (Get-Date).ToString('o'); Computer = $env:COMPUTERNAME
@@ -235,6 +252,8 @@ $manifest = [ordered]@{
     ExcludedExtensions = @($excluded); Files = @($files.ToArray()); Warnings = @($warnings.ToArray())
 }
 Write-SetupJson -Value $manifest -Path (Join-Path $backup 'manifest.json')
+$manifestItem = Get-Item -LiteralPath (Join-Path $backup 'manifest.json')
+if ($manifestItem.Length -gt 16MB) { throw 'Das Sicherungsmanifest überschreitet 16 MB.' }
 $timer.Stop()
 $result = if ($warnings.Count -gt 0) { 'BACKUP MIT WARNUNGEN ABGESCHLOSSEN' } else { 'BACKUP ABGESCHLOSSEN' }
 $summary = @(
@@ -274,14 +293,48 @@ if ($CreateArchive) {
         [IO.Compression.ZipFile]::CreateFromDirectory($backup, $stagedArchive, [IO.Compression.CompressionLevel]::Optimal, $false)
     }
     $archivePath = $finalDisplayPath
-    Move-Item -LiteralPath $stagedArchive -Destination $archivePath -ErrorAction Stop
-    $finalPath = $archivePath
+    $publishingPath = Join-Path $destinationRoot ('.wsb-' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.tmp')
     $logPath = $null
+    Move-Item -LiteralPath $stagedArchive -Destination $publishingPath -ErrorAction Stop
+    if ($ArchivePassword) {
+        & $sevenZipPath t -y ("-p$ArchivePassword") $publishingPath | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Das übertragene 7z-Archiv konnte nicht abschließend validiert werden.' }
+    } else {
+        $publishedZip = [IO.Compression.ZipFile]::OpenRead($publishingPath)
+        try {
+            foreach ($publishedEntry in $publishedZip.Entries) {
+                if ([string]::IsNullOrEmpty($publishedEntry.Name)) { continue }
+                $entryStream = $publishedEntry.Open()
+                try { $entryStream.CopyTo([IO.Stream]::Null) } finally { $entryStream.Dispose() }
+            }
+            $publishedManifestEntry = @($publishedZip.Entries | Where-Object FullName -eq 'manifest.json')
+            if ($publishedManifestEntry.Count -ne 1) { throw 'Das übertragene ZIP-Archiv enthält kein eindeutiges Manifest.' }
+            $reader = [IO.StreamReader]::new($publishedManifestEntry[0].Open(), [Text.Encoding]::UTF8, $true)
+            try { $publishedManifest = $reader.ReadToEnd() | ConvertFrom-Json -ErrorAction Stop } finally { $reader.Dispose() }
+            if ($publishedManifest.SchemaVersion -ne 1 -or $publishedManifest.Computer -ne $env:COMPUTERNAME) { throw 'Das übertragene ZIP-Archiv konnte nicht abschließend validiert werden.' }
+        } finally { $publishedZip.Dispose() }
+    }
+    Move-Item -LiteralPath $publishingPath -Destination $archivePath -ErrorAction Stop
+    $publishingPath = $null
+    $finalPath = $archivePath
     Write-BackupStatus "Archiv ins Sicherungsziel verschoben: $archivePath" -Color Green
 } else {
-    Move-Item -LiteralPath $backup -Destination $finalBasePath -ErrorAction Stop
-    $finalPath = $finalBasePath
+    $publishingPath = Join-Path $destinationRoot ('.wsb-' + [guid]::NewGuid().ToString('N').Substring(0,8))
     $logPath = $null
+    $sourceInventory = @(Get-ChildItem -LiteralPath $backup -File -Recurse -Force -ErrorAction Stop | ForEach-Object {
+        [pscustomobject]@{ Relative = $_.FullName.Substring($backup.TrimEnd('\').Length + 1); Length = $_.Length; SHA256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+    })
+    Move-Item -LiteralPath $backup -Destination $publishingPath -ErrorAction Stop
+    $publishedManifest = Get-Content -LiteralPath (Join-Path $publishingPath 'manifest.json') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($publishedManifest.SchemaVersion -ne 1 -or $publishedManifest.Computer -ne $env:COMPUTERNAME) { throw 'Der übertragene Sicherungsordner konnte nicht abschließend validiert werden.' }
+    foreach ($file in $sourceInventory) {
+        $publishedFile = Join-SetupSafePath $publishingPath $file.Relative
+        $publishedItem = Get-Item -LiteralPath $publishedFile -ErrorAction Stop
+        if ($publishedItem.Length -ne $file.Length -or (Get-FileHash -LiteralPath $publishedFile -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Übertragene Datei hat eine falsche Prüfsumme: $publishedFile" }
+    }
+    Move-Item -LiteralPath $publishingPath -Destination $finalBasePath -ErrorAction Stop
+    $publishingPath = $null
+    $finalPath = $finalBasePath
     Write-BackupStatus "Sicherungsordner ins Ziel verschoben: $finalPath" -Color Green
 }
 Write-Progress -Id 1 -Activity 'Windows-Setup sichern' -Completed
@@ -301,6 +354,7 @@ Write-BackupStatus "Abschlussbericht: $(if ($CreateArchive) { 'im Archiv' } else
     throw
 } finally {
     $timer.Stop()
+    if ($publishingPath -and (Test-Path -LiteralPath $publishingPath)) { Remove-Item -LiteralPath $publishingPath -Recurse -Force -ErrorAction SilentlyContinue }
     if ($stagingRoot -and (Test-Path -LiteralPath $stagingRoot)) { Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue }
     Write-Progress -Id 2 -Activity 'Dateien sichern' -Completed
     Write-Progress -Id 1 -Activity 'Windows-Setup sichern' -Completed
