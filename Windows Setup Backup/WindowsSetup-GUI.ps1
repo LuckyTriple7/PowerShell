@@ -103,7 +103,7 @@ $scheduleTab = [Windows.Forms.TabPage]::new('Zeitplan')
 foreach ($tab in @($backupTab,$restoreTab,$extrasTab,$scheduleTab)) { $tab.AutoScroll = $true; $tab.BackColor = [Drawing.Color]::White; [void]$tabs.TabPages.Add($tab) }
 
 # Backup tab
-$backupTable = New-UiTable @(48,38,0,28,64,28,64,38,38,38,0,48)
+$backupTable = New-UiTable @(48,38,0,28,64,28,64,38,0,38,38,38,0,64)
 $backupTab.Controls.Add($backupTable)
 Add-UiWide $backupTable (New-UiLabel 'Sichert Programmlisten, Startmenü und Windows-Einstellungen. Persönliche Dateien kommen weiterhin über OneDrive.') 0
 $destination = [Windows.Forms.TextBox]::new(); $destination.Dock = 'Fill'
@@ -133,20 +133,33 @@ $archiveOptions = New-UiFlow
 $archiveText = if ($sevenZipPath) { 'Zusätzlich als Archiv packen (ZIP / 7z mit Passwort)' } else { 'Zusätzlich als ZIP packen' }
 $createArchive = New-UiCheck $archiveText $true
 $archiveOptions.Controls.Add($createArchive)
+$backupSensitive = New-UiCheck 'WLAN-Profile und SSH-Schlüssel (nur mit Passwort)'
+$backupSensitive.Visible = [bool]$sevenZipPath
+$archiveOptions.Controls.Add($backupSensitive)
 Add-UiWide $backupTable $archiveOptions 8
 $archivePassword = [Windows.Forms.TextBox]::new(); $archivePassword.Dock = 'Fill'; $archivePassword.UseSystemPasswordChar = $true
 $archivePasswordLabel = New-UiLabel 'Archivpasswort (optional)'
 $backupTable.Controls.Add($archivePasswordLabel,0,9); $backupTable.Controls.Add($archivePassword,1,9); $backupTable.SetColumnSpan($archivePassword,2)
-$archivePasswordLabel.Visible = [bool]$sevenZipPath; $archivePassword.Visible = [bool]$sevenZipPath
+$archivePasswordConfirm = [Windows.Forms.TextBox]::new(); $archivePasswordConfirm.Dock = 'Fill'; $archivePasswordConfirm.UseSystemPasswordChar = $true
+$archivePasswordConfirmLabel = New-UiLabel 'Passwort wiederholen'
+$backupTable.Controls.Add($archivePasswordConfirmLabel,0,10); $backupTable.Controls.Add($archivePasswordConfirm,1,10); $backupTable.SetColumnSpan($archivePasswordConfirm,2)
+foreach ($control in @($archivePasswordLabel,$archivePassword,$archivePasswordConfirmLabel,$archivePasswordConfirm)) { $control.Visible = [bool]$sevenZipPath }
+# Only a password typed twice identically is stored or used; a typo would make every later backup unreadable.
+$script:confirmedArchivePassword = ''
+$keepLastPanel = New-UiFlow; $keepLastPanel.WrapContents = $false
+$keepLast = [Windows.Forms.NumericUpDown]::new(); $keepLast.Minimum = 0; $keepLast.Maximum = 365; $keepLast.Width = 70; $keepLast.Margin = [Windows.Forms.Padding]::new(0,6,8,0)
+$keepLastHint = New-UiLabel 'neueste Sicherungen dieses Rechners im Ziel behalten, ältere nach erfolgreicher Sicherung löschen (0 = alle behalten)'; $keepLastHint.AutoSize = $true; $keepLastHint.Dock = 'None'; $keepLastHint.Margin = [Windows.Forms.Padding]::new(0,9,0,0)
+$keepLastPanel.Controls.Add($keepLast); $keepLastPanel.Controls.Add($keepLastHint)
+$backupTable.Controls.Add((New-UiLabel 'Aufbewahrung'),0,11); $backupTable.Controls.Add($keepLastPanel,1,11); $backupTable.SetColumnSpan($keepLastPanel,2)
 $backupButtons = New-UiFlow
 $startBackup = New-UiButton 'Sicherung starten' 170
 $savePreferences = New-UiButton 'Einstellungen speichern' 195
 $openDestination = New-UiButton 'Zielordner öffnen' 165
 foreach ($control in @($startBackup,$savePreferences,$openDestination)) { $backupButtons.Controls.Add($control) }
-Add-UiWide $backupTable $backupButtons 10
-$archiveHint = if ($sevenZipPath) { "7-Zip erkannt: $sevenZipPath. Mit Passwort wird ein AES-256-geschütztes 7z-Archiv erzeugt; ohne Passwort ein ZIP." } else { '7-Zip wurde nicht gefunden. Daher steht nur ein ZIP ohne Passwortschutz zur Verfügung.' }
-$archiveHint += ' Das Windows-Feature-Inventar wird nur bei als Administrator gestarteter GUI erstellt.'
-Add-UiWide $backupTable (New-UiLabel $archiveHint) 11
+Add-UiWide $backupTable $backupButtons 12
+$archiveHint = if ($sevenZipPath) { "7-Zip erkannt: $sevenZipPath. Mit Passwort wird ein AES-256-geschütztes 7z-Archiv erzeugt; ohne Passwort ein ZIP. Das Passwort zusätzlich außerhalb dieses Rechners aufbewahren (z. B. Passwortmanager): Nach einer Neuinstallation ist es sonst verloren." } else { '7-Zip wurde nicht gefunden. Daher steht nur ein ZIP ohne Passwortschutz zur Verfügung.' }
+$archiveHint += ' Windows-Features, Energieplan und Standard-Apps werden nur bei als Administrator gestarteter GUI erfasst.'
+Add-UiWide $backupTable (New-UiLabel $archiveHint) 13
 
 # Restore tab
 $restoreTable = New-UiTable @(38,38,110,45,0,0,28,110,0,35,35,38)
@@ -211,14 +224,18 @@ $restoreUserEnvironment = New-UiCheck 'Benutzer-Umgebungsvariablen'
 $restoreMachineEnvironment = New-UiCheck 'System-Umgebungsvariablen (Admin)'
 $restoreWindowsComponents = New-UiCheck 'Windows-Features/Capabilities (Admin)'
 $restoreConnections = New-UiCheck 'Netzwerkdrucker und Netzlaufwerke'
-foreach ($control in @($restoreChocolatey,$restoreVSCode,$restoreModules,$restoreUserEnvironment,$restoreMachineEnvironment,$restoreWindowsComponents,$restoreConnections)) { $extraRestoreFlags.Controls.Add($control) }
+$restoreFonts = New-UiCheck 'Benutzerschriftarten'
+$restoreWlan = New-UiCheck 'WLAN-Profile'
+$restoreSsh = New-UiCheck 'SSH-Schlüssel (~\.ssh)'
+$extraRestoreChecks = @($restoreChocolatey,$restoreVSCode,$restoreModules,$restoreUserEnvironment,$restoreMachineEnvironment,$restoreWindowsComponents,$restoreConnections,$restoreFonts,$restoreWlan,$restoreSsh)
+foreach ($control in $extraRestoreChecks) { $extraRestoreFlags.Controls.Add($control) }
 Add-UiWide $extrasTable $extraRestoreFlags 8
 $extrasButtons = New-UiFlow
 $previewExtras = New-UiButton 'Vorschau (WhatIf)' 155
 $startExtras = New-UiButton 'Zusatzbereiche wiederherstellen' 230
 foreach ($control in @($previewExtras,$startExtras)) { $extrasButtons.Controls.Add($control) }
 Add-UiWide $extrasTable $extrasButtons 1
-Add-UiWide $extrasTable (New-UiLabel 'Systemvariablen und Windows-Komponenten benötigen beim tatsächlichen Wiederherstellen Administratorrechte.') 9
+Add-UiWide $extrasTable (New-UiLabel 'Systemvariablen und Windows-Komponenten benötigen beim tatsächlichen Wiederherstellen Administratorrechte. hosts-Datei, Energieplan und Standard-Apps liegen als Referenz unter Personal\Reference im Backup.') 9
 $pipEnvironment = [Windows.Forms.ComboBox]::new(); $pipEnvironment.DropDownStyle = 'DropDownList'; $pipEnvironment.Dock = 'Fill'; $pipEnvironment.DisplayMember = 'Label'
 $restoreTable.Controls.Add((New-UiLabel 'pip-Umgebung'),0,9); $restoreTable.Controls.Add($pipEnvironment,1,9); $restoreTable.SetColumnSpan($pipEnvironment,2)
 $targetPython = [Windows.Forms.TextBox]::new(); $targetPython.Dock = 'Fill'
@@ -228,9 +245,10 @@ $restoreButtons = New-UiFlow
 $refreshBackups = New-UiButton 'Liste aktualisieren' 155
 $previewRestore = New-UiButton 'Vorschau (WhatIf)' 155
 $startRestore = New-UiButton 'Wiederherstellen' 160
+$verifyBackup = New-UiButton 'Sicherung prüfen' 155
 $deleteBackup = New-UiButton 'Sicherung löschen' 165
-$deleteBackup.Enabled = $false
-foreach ($control in @($refreshBackups,$previewRestore,$startRestore,$deleteBackup)) { $restoreButtons.Controls.Add($control) }
+$deleteBackup.Enabled = $false; $verifyBackup.Enabled = $false
+foreach ($control in @($refreshBackups,$previewRestore,$startRestore,$verifyBackup,$deleteBackup)) { $restoreButtons.Controls.Add($control) }
 Add-UiWide $restoreTable $restoreButtons 5
 Add-UiWide $restoreTable (New-UiLabel 'Reihenfolge: WinGet zuerst, danach Dateien und Einstellungen. Weitere Optionen befinden sich im Reiter Zusatzbereiche.') 11
 
@@ -279,11 +297,16 @@ function Save-UiPreferences {
         Winget = $backupWinget.Checked; Chocolatey = $backupChocolatey.Checked; Python = $backupPython.Checked; Developer = $backupDeveloper.Checked
         Agreements = $backupAgreements.Checked; ExtraPython = $extraPython.Text
         CustomFolders = $customFolders.Text; ExcludedExtensions = $excludedExtensions.Text; CreateArchive = $createArchive.Checked
-        ProtectedArchivePassword = Protect-SetupSecret $archivePassword.Text; ProtectedRestoreArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
+        IncludeSensitiveData = $backupSensitive.Checked; KeepLast = [int]$keepLast.Value
+        ProtectedArchivePassword = Protect-SetupSecret $(if ($archivePassword.Text -ceq $archivePasswordConfirm.Text) { $archivePassword.Text } else { $script:confirmedArchivePassword })
+        ProtectedRestoreArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
         Frequency = $frequency.SelectedIndex; Day = $weekDay.SelectedIndex; Time = $scheduleTime.Value.ToString('HH:mm'); Battery = $allowBattery.Checked
     } $settingsPath
 }
 function New-UiBackupRequest {
+    $usesPassword = $createArchive.Checked -and $sevenZipPath
+    if ($usesPassword -and $archivePassword.Text -cne $archivePasswordConfirm.Text) { throw 'Archivpasswort und Wiederholung stimmen nicht überein.' }
+    if ($usesPassword) { $script:confirmedArchivePassword = $archivePassword.Text }
     $request = [pscustomobject]@{
         SchemaVersion = 1; Operation = 'Backup'; Destination = (Get-SetupAbsoluteDirectory $destination.Text)
         IncludeDeveloperSettings = $backupDeveloper.Checked; SkipWinget = -not $backupWinget.Checked
@@ -292,8 +315,10 @@ function New-UiBackupRequest {
         PythonExecutables = @($extraPython.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         CustomFolders = @($customFolders.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         ExcludedExtensions = @($excludedExtensions.Text -split '[,;\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        CreateArchive = $createArchive.Checked; ProtectedArchivePassword = $(if ($createArchive.Checked -and $sevenZipPath) { Protect-SetupSecret $archivePassword.Text } else { '' })
+        CreateArchive = $createArchive.Checked; ProtectedArchivePassword = $(if ($usesPassword) { Protect-SetupSecret $archivePassword.Text } else { '' })
+        IncludeSensitiveData = [bool]($usesPassword -and $backupSensitive.Checked); KeepLast = [int]$keepLast.Value
     }
+    if ($backupSensitive.Checked -and -not ($usesPassword -and $archivePassword.Text)) { throw 'WLAN-Profile und SSH-Schlüssel werden nur in ein verschlüsseltes Archiv gesichert. Archivpasswort angeben oder die Option abwählen.' }
     if ($request.SkipPython) { $request.PythonExecutables = @() }
     Test-SetupRequest $request
     return $request
@@ -316,6 +341,7 @@ function New-UiRestoreRequest {
         VSCodeExtensions = ($ExtrasOnly -and $restoreVSCode.Checked); PowerShellModules = ($ExtrasOnly -and $restoreModules.Checked)
         UserEnvironment = ($ExtrasOnly -and $restoreUserEnvironment.Checked); MachineEnvironment = ($ExtrasOnly -and $restoreMachineEnvironment.Checked)
         WindowsComponents = ($ExtrasOnly -and $restoreWindowsComponents.Checked); Connections = ($ExtrasOnly -and $restoreConnections.Checked)
+        Fonts = ($ExtrasOnly -and $restoreFonts.Checked); WlanProfiles = ($ExtrasOnly -and $restoreWlan.Checked); SshKeys = ($ExtrasOnly -and $restoreSsh.Checked)
         EnvironmentId = $(if (-not $ExtrasOnly -and $pipEnvironment.SelectedItem) { $pipEnvironment.SelectedItem.Id } else { '' })
         PythonExecutable = $(if ($ExtrasOnly) { '' } else { $targetPython.Text.Trim() })
         ProtectedArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text
@@ -328,9 +354,16 @@ function New-UiRestoreRequest {
     Test-SetupRequest $request
     return $request
 }
+function New-UiVerifyRequest {
+    if (-not $script:selectedBackup -or $script:selectedBackup.Error) { throw 'Eine gültige Sicherung in der Liste auswählen.' }
+    $request = [pscustomobject]@{ SchemaVersion = 1; Operation = 'Verify'; BackupPath = $script:selectedBackup.Path
+        ProtectedArchivePassword = Protect-SetupSecret $restoreArchivePassword.Text }
+    Test-SetupRequest $request
+    return $request
+}
 function Update-UiBackupList {
     $entries = @(Get-SetupBackupEntries $restoreRoot.Text $restoreArchivePassword.Text | Sort-Object Created, IsArchive -Descending)
-    $grid.Rows.Clear(); $script:selectedBackup = $null; $pipEnvironment.Items.Clear(); $packageList.Items.Clear(); $customRestoreList.Items.Clear(); $chocolateyRestoreList.Items.Clear(); $storeRestoreList.Items.Clear(); $targetPython.Clear(); $deleteBackup.Enabled = $false
+    $grid.Rows.Clear(); $script:selectedBackup = $null; $pipEnvironment.Items.Clear(); $packageList.Items.Clear(); $customRestoreList.Items.Clear(); $chocolateyRestoreList.Items.Clear(); $storeRestoreList.Items.Clear(); $targetPython.Clear(); $deleteBackup.Enabled = $false; $verifyBackup.Enabled = $false
     $restoreChocolatey.Checked = $false; $restoreChocolatey.Enabled = $false; $chocolateyRestoreList.Enabled = $false
     $extrasSelection.Text = 'Zuerst im Reiter Wiederherstellung eine Sicherung auswählen.'
     foreach ($entry in $entries) {
@@ -344,14 +377,14 @@ function Update-UiBackupList {
     else { $backupDetails.Text = 'Keine abgeschlossenen Sicherungen (manifest.json) gefunden. Einen Backup-Ordner oder dessen übergeordneten Ordner wählen.' }
 }
 function Update-UiSelection {
-    $deleteBackup.Enabled = $false
+    $deleteBackup.Enabled = $false; $verifyBackup.Enabled = $false
     if ($grid.SelectedRows.Count -eq 0) { return }
     $script:selectedBackup = $grid.SelectedRows[0].Tag
     $pipEnvironment.Items.Clear(); $packageList.Items.Clear(); $customRestoreList.Items.Clear(); $chocolateyRestoreList.Items.Clear(); $storeRestoreList.Items.Clear(); $targetPython.Clear(); $extrasSelection.Text = 'Zuerst im Reiter Wiederherstellung eine Sicherung auswählen.'
-    foreach ($control in @($restoreChocolatey,$restoreVSCode,$restoreModules,$restoreUserEnvironment,$restoreMachineEnvironment,$restoreWindowsComponents,$restoreConnections)) { $control.Checked = $false; $control.Enabled = $false }
+    foreach ($control in $extraRestoreChecks) { $control.Checked = $false; $control.Enabled = $false }
     if (-not $script:selectedBackup) { return }
     if ($script:selectedBackup.Error) { $backupDetails.Text = $script:selectedBackup.Error; return }
-    $deleteBackup.Enabled = $true
+    $deleteBackup.Enabled = $true; $verifyBackup.Enabled = $true
     $sourceType = if ($script:selectedBackup.IsArchive) { "$($script:selectedBackup.ArchiveType)-Backup; wird nur temporär unter %TEMP% entpackt." } else { 'Backup-Ordner' }
     $backupDetails.Text = $script:selectedBackup.Path + "`r`n" + "$sourceType | $($script:selectedBackup.Files) Dateien; $($script:selectedBackup.Warnings.Count) Warnungen."
     $extrasSelection.Text = "Ausgewählte Sicherung: $($script:selectedBackup.Path)"
@@ -404,6 +437,13 @@ function Update-UiSelection {
     $restoreModules.Enabled = $developerAvailable -and @($developerData.PowerShellModules).Count -gt 0
     $restoreUserEnvironment.Enabled = $environmentAvailable; $restoreMachineEnvironment.Enabled = $environmentAvailable
     $restoreWindowsComponents.Enabled = $componentsAvailable; $restoreConnections.Enabled = $connectionsAvailable
+    $personalData = Read-SetupOptionalBackupDocument $script:selectedBackup.Path 'personal-settings.json' $restoreArchivePassword.Text
+    if ($personalData) {
+        Assert-SetupDocumentSchema $personalData 'personal-settings.json'
+        $restoreFonts.Enabled = @($personalData.Fonts).Count -gt 0
+        $restoreWlan.Enabled = @($personalData.WlanProfiles).Count -gt 0
+        $restoreSsh.Enabled = @($personalData.SshFiles).Count -gt 0
+    }
     foreach ($environment in $script:selectedBackup.Python) {
         [void]$pipEnvironment.Items.Add([pscustomobject]@{ Id = $environment.Id; Executable = $environment.Executable
             Label = "$($environment.Id) | $($environment.Version) | $($environment.PackageCount) Pakete | $($environment.Executable)" })
@@ -426,16 +466,25 @@ function Start-UiOperation {
     $status.ForeColor = [Drawing.Color]::FromArgb(35,85,150); $status.Text = 'Aktion läuft ...'
 }
 function Update-UiTaskStatus {
+    $latest = Get-SetupLatestBackupTime $destination.Text
+    $age = if ($latest) { [int][Math]::Floor(((Get-Date) - $latest).TotalDays) } else { $null }
+    $latestText = if ($latest) { "Letzte Sicherung im Ziel: $($latest.ToString('dd.MM.yyyy HH:mm')) (vor $age Tagen)" } else { 'Keine Sicherung dieses Rechners im Ziel gefunden.' }
     $task = Get-ManagedSetupTask
-    if (-not $task) { $taskStatus.Text = 'Keine geplante Sicherung eingerichtet.'; $toggleTask.Enabled = $false; $removeTask.Enabled = $false; return }
+    if (-not $task) { $taskStatus.Text = "Keine geplante Sicherung eingerichtet.`r`n$latestText"; $toggleTask.Enabled = $false; $removeTask.Enabled = $false; return }
     $info = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop
-    $taskStatus.Text = "Aufgabe: $($task.TaskName)`r`nStatus: $($task.State) | Nächster Lauf: $($info.NextRunTime)`r`nLetzter Lauf: $($info.LastRunTime) | Ergebnis: $($info.LastTaskResult) (0 = erfolgreich, 2 = Warnungen, 1 = Fehler)`r`nProtokolle: $stateRoot\Runs"
+    $taskStatus.Text = "Aufgabe: $($task.TaskName)`r`nStatus: $($task.State) | Nächster Lauf: $($info.NextRunTime)`r`nLetzter Lauf: $($info.LastRunTime) | Ergebnis: $($info.LastTaskResult) (0 = erfolgreich, 2 = Warnungen, 1 = Fehler)`r`n$latestText`r`nProtokolle: $stateRoot\Runs"
     $toggleTask.Enabled = $true; $removeTask.Enabled = $true
     $toggleTask.Text = if ($task.State -eq 'Disabled') { 'Aktivieren' } else { 'Deaktivieren' }
+    # A weekly task tolerates one missed run before warning; a daily task two.
+    $allowedAge = if ($task.Triggers.Count -gt 0 -and $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskWeeklyTrigger') { 14 } else { 2 }
+    if ($task.State -ne 'Disabled' -and ($null -eq $latest -or $age -gt $allowedAge)) {
+        $status.ForeColor = [Drawing.Color]::DarkOrange
+        $status.Text = "Achtung: Die geplante Sicherung ist überfällig. $latestText Protokolle unter Zeitplan prüfen."
+    }
 }
 function Update-UiSchedulePreview {
     $customCount = @($customFolders.Lines | Where-Object { $_.Trim() }).Count
-    $schedulePreview.Text = "Ziel: $($destination.Text)`r`nWinGet: $($backupWinget.Checked) | Chocolatey: $($backupChocolatey.Checked) | pip: $($backupPython.Checked) | Eigene Ordner: $customCount | Archiv: $($createArchive.Checked)`r`nGeänderte Optionen werden erst mit 'Zeitplan speichern' in die Aufgabe übernommen."
+    $schedulePreview.Text = "Ziel: $($destination.Text)`r`nWinGet: $($backupWinget.Checked) | Chocolatey: $($backupChocolatey.Checked) | pip: $($backupPython.Checked) | Eigene Ordner: $customCount | Archiv: $($createArchive.Checked) | Behalten: $(if ($keepLast.Value -gt 0) { $keepLast.Value } else { 'alle' })`r`nGeänderte Optionen werden erst mit 'Zeitplan speichern' in die Aufgabe übernommen."
 }
 
 # User actions: external changes happen only through these buttons.
@@ -448,7 +497,9 @@ $browseCustomFolder.Add_Click({ try {
         if ($lines -notcontains $selection.Text) { $customFolders.Lines = @($lines + $selection.Text) }
     }
 } catch { Show-UiError $_ } })
-$createArchive.Add_CheckedChanged({ $archivePassword.Enabled = $createArchive.Checked; Update-UiSchedulePreview })
+$createArchive.Add_CheckedChanged({ foreach ($control in @($archivePassword,$archivePasswordConfirm,$backupSensitive)) { $control.Enabled = $createArchive.Checked }; Update-UiSchedulePreview })
+$keepLast.Add_ValueChanged({ Update-UiSchedulePreview })
+$verifyBackup.Add_Click({ try { Start-UiOperation (New-UiVerifyRequest) } catch { Show-UiError $_ } })
 $restoreChocolatey.Add_CheckedChanged({ $chocolateyRestoreList.Enabled = $restoreChocolatey.Checked })
 $selectAllPackages.Add_Click({ for ($index = 0; $index -lt $packageList.Items.Count; $index++) { $packageList.SetItemChecked($index, $true) } })
 $selectNoPackages.Add_Click({ for ($index = 0; $index -lt $packageList.Items.Count; $index++) { $packageList.SetItemChecked($index, $false) } })
@@ -493,7 +544,7 @@ $previewRestore.Add_Click({ try { Start-UiOperation (New-UiRestoreRequest $true)
 $previewExtras.Add_Click({ try { Start-UiOperation (New-UiRestoreRequest $true $true) } catch { Show-UiError $_ } })
 $startExtras.Add_Click({ try {
     $request = New-UiRestoreRequest $false $true
-    $description = "Ausgewählte Zusatzbereiche wiederherstellen?`r`n`r`n$($request.BackupPath)`r`n`r`nEigene Ordner: $($request.CustomFolderKeys.Count) | Chocolatey: $($request.ChocolateyPackages.Count) | Store-Apps: $($request.StorePackageFamilies.Count)`r`nVS Code: $($request.VSCodeExtensions) | Module: $($request.PowerShellModules) | Umgebung: $($request.UserEnvironment)/$($request.MachineEnvironment) | Windows: $($request.WindowsComponents) | Verbindungen: $($request.Connections)"
+    $description = "Ausgewählte Zusatzbereiche wiederherstellen?`r`n`r`n$($request.BackupPath)`r`n`r`nEigene Ordner: $($request.CustomFolderKeys.Count) | Chocolatey: $($request.ChocolateyPackages.Count) | Store-Apps: $($request.StorePackageFamilies.Count)`r`nVS Code: $($request.VSCodeExtensions) | Module: $($request.PowerShellModules) | Umgebung: $($request.UserEnvironment)/$($request.MachineEnvironment) | Windows: $($request.WindowsComponents) | Verbindungen: $($request.Connections)`r`nSchriftarten: $($request.Fonts) | WLAN: $($request.WlanProfiles) | SSH: $($request.SshKeys)"
     if ([Windows.Forms.MessageBox]::Show($form,$description,'Zusatzbereiche wiederherstellen','YesNo','Warning','Button2') -eq 'Yes') { Start-UiOperation $request }
 } catch { Show-UiError $_ } })
 $startRestore.Add_Click({ try {
@@ -570,6 +621,7 @@ $timer.Add_Tick({
             $resultPath = Join-Path $run 'result.json'
             $result = if (Test-Path -LiteralPath $resultPath) { Read-SetupDocument $resultPath } else { [pscustomobject]@{ Status = 'Failed'; Error = "Prozess mit Exitcode $code beendet; kein Abschlussbericht. Siehe Ausgabe." } }
             $message = switch ($result.Status) {
+                { $_ -eq 'Completed' -and $completedRequest.Operation -eq 'Verify' } { "Sicherung geprüft: $($result.VerifiedFiles) Dateien mit gültiger Prüfsumme. Archiv und Passwort sind in Ordnung."; break }
                 'Completed' { 'Aktion erfolgreich abgeschlossen.' }
                 'CompletedWithWarnings' { "$(if ($completedRequest.Operation -eq 'Backup') { 'Sicherung' } else { 'Wiederherstellung' }) mit $($result.WarningCount) Warnungen abgeschlossen. Bitte das Protokoll prüfen." }
                 'PreviewCompletedWithWarnings' { "Vorschau mit $($result.WarningCount) Warnungen abgeschlossen. Bitte das Protokoll prüfen." }
@@ -602,8 +654,11 @@ if (Test-Path -LiteralPath $settingsPath) {
         if ($null -ne $saved.CustomFolders) { $customFolders.Text = $saved.CustomFolders }
         if ($null -ne $saved.ExcludedExtensions) { $excludedExtensions.Text = $saved.ExcludedExtensions }
         if ($null -ne $saved.CreateArchive) { $createArchive.Checked = [bool]$saved.CreateArchive }
+        if ($null -ne $saved.IncludeSensitiveData) { $backupSensitive.Checked = [bool]$saved.IncludeSensitiveData }
+        if ($null -ne $saved.KeepLast) { $keepLast.Value = [Math]::Max(0,[Math]::Min(365,[int]$saved.KeepLast)) }
         if (-not [string]::IsNullOrEmpty([string]$saved.ProtectedArchivePassword)) {
             $archivePassword.Text = Unprotect-SetupSecret ([string]$saved.ProtectedArchivePassword)
+            $archivePasswordConfirm.Text = $archivePassword.Text; $script:confirmedArchivePassword = $archivePassword.Text
         }
         if (-not [string]::IsNullOrEmpty([string]$saved.ProtectedRestoreArchivePassword)) {
             $restoreArchivePassword.Text = Unprotect-SetupSecret ([string]$saved.ProtectedRestoreArchivePassword)

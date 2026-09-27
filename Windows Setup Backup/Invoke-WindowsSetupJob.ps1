@@ -1,10 +1,10 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
 Fuehrt einen JSON-Auftrag fuer die GUI oder die Aufgabenplanung aus.
 #>
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$RequestPath, [string]$RunDirectory)
+param([Parameter(Mandatory)][string]$RequestPath, [string]$RunDirectory, [switch]$Notify)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'WindowsSetup.GuiSupport.ps1')
@@ -12,7 +12,8 @@ if (-not $RunDirectory) { $RunDirectory = Join-Path $PSScriptRoot ('GuiState\Run
 New-Item -ItemType Directory -Path $RunDirectory -Force | Out-Null
 $log = Join-Path $RunDirectory 'operation.log'
 $resultPath = Join-Path $RunDirectory 'result.json'
-$result = [ordered]@{ Status = 'Running'; Started = (Get-Date).ToString('o'); Finished = $null; BackupPath = $null; ArchivePath = $null; WarningCount = 0; Error = $null }
+$result = [ordered]@{ Status = 'Running'; Started = (Get-Date).ToString('o'); Finished = $null; BackupPath = $null; ArchivePath = $null; WarningCount = 0; VerifiedFiles = $null; Error = $null }
+$request = $null
 $mutex = $null
 $locked = $false
 $exitCode = 1
@@ -42,7 +43,7 @@ try {
     $mutex = [Threading.Mutex]::new($false, $mutexName)
     try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'Eine andere Sicherung oder Wiederherstellung dieses Benutzers laeuft bereits.' }
-    if ($request.Operation -eq 'Restore' -and [IO.Path]::GetExtension([string]$request.BackupPath) -in @('.zip','.7z')) {
+    if ($request.Operation -in @('Restore','Verify') -and [IO.Path]::GetExtension([string]$request.BackupPath) -in @('.zip','.7z')) {
         $archivePath = Get-SetupAbsoluteDirectory ([string]$request.BackupPath)
         $archiveType = [IO.Path]::GetExtension($archivePath).TrimStart('.').ToUpperInvariant()
         $archivePassword = Unprotect-SetupSecret ([string]$request.ProtectedArchivePassword)
@@ -68,6 +69,7 @@ try {
             ExcludedExtensions = [string[]]@($request.ExcludedExtensions | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             CreateArchive = [bool]$request.CreateArchive
             ArchivePassword = Unprotect-SetupSecret ([string]$request.ProtectedArchivePassword)
+            IncludeSensitiveData = ($request.PSObject.Properties['IncludeSensitiveData'] -and [bool]$request.IncludeSensitiveData)
         }
         & (Join-Path $PSScriptRoot 'Backup-WindowsSetup.ps1') @parameters *>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) { throw $_ }
@@ -77,11 +79,27 @@ try {
                 $result.WarningCount = $_.WarningCount
             } else { Write-JobLine $_ }
         }
+        $keepLast = if ($request.PSObject.Properties['KeepLast'] -and $null -ne $request.KeepLast) { [int]$request.KeepLast } else { 0 }
+        if ($keepLast -gt 0 -and $result.BackupPath) {
+            Write-JobLine "Aufbewahrung: die neuesten $keepLast Sicherungen dieses Rechners bleiben erhalten."
+            foreach ($removal in @(Invoke-SetupBackupRetention -Destination ([string]$request.Destination) -KeepLast $keepLast -ArchivePassword $parameters.ArchivePassword)) {
+                if ($removal.Removed) { Write-JobLine "Alte Sicherung gelöscht: $($removal.Path)" }
+                else { $result.WarningCount++; Write-JobLine "WARNUNG: Alte Sicherung nicht gelöscht: $($removal.Path): $($removal.Error)" }
+            }
+        }
+    } elseif ($request.Operation -eq 'Verify') {
+        Write-JobLine "Sicherung wird geprüft: $($request.BackupPath)"
+        $integrity = Test-SetupBackupIntegrity ([string]$request.BackupPath)
+        foreach ($problem in $integrity.Problems) { Write-JobLine "FEHLER: $problem" }
+        $result.VerifiedFiles = $integrity.CheckedFiles
+        if ($integrity.Problems.Count -gt 0) { throw "Sicherung beschädigt: $($integrity.Problems.Count) Probleme; siehe Protokoll." }
+        Write-JobLine "$($integrity.CheckedFiles) Dateien mit gültiger Prüfsumme; alle Dokumente lesbar."
     } else {
         $requestCustomFolders = [string[]]@($request.CustomFolderKeys | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $requestStoreApps = [string[]]@($request.StorePackageFamilies | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $requestChocolatey = [string[]]@($request.ChocolateyPackages | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or
+        $requestFonts = [bool]$request.Fonts; $requestWlan = [bool]$request.WlanProfiles; $requestSsh = [bool]$request.SshKeys
+        $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or $requestFonts -or $requestWlan -or $requestSsh -or
             $request.VSCodeExtensions -or $request.PowerShellModules -or $request.UserEnvironment -or $request.MachineEnvironment -or
             $request.WindowsComponents -or $request.Connections -or $requestStoreApps.Count -gt 0 -or $requestChocolatey.Count -gt 0
         $windowsParameters = $null; $pythonParameters = $null
@@ -96,7 +114,7 @@ try {
                 UserEnvironment = [bool]$request.UserEnvironment; MachineEnvironment = [bool]$request.MachineEnvironment
                 WindowsComponents = [bool]$request.WindowsComponents; Connections = [bool]$request.Connections
                 StorePackageFamilies = $requestStoreApps
-                ChocolateyPackages = $requestChocolatey; UndoRoot = (Join-Path $RunDirectory 'BeforeRestore')
+                ChocolateyPackages = $requestChocolatey; Fonts = $requestFonts; WlanProfiles = $requestWlan; SshKeys = $requestSsh; UndoRoot = (Join-Path $RunDirectory 'BeforeRestore')
                 Confirm = $false }
         }
         if ($request.PythonPackages) {
@@ -143,6 +161,11 @@ try {
     }
     $result.Finished = (Get-Date).ToString('o')
     Save-SetupDocument $result $resultPath
+    if ($Notify -and $result.Status -ne 'Completed') {
+        $title = if ($result.Status -eq 'Failed') { 'Windows Setup Backup fehlgeschlagen' } else { 'Windows Setup Backup mit Warnungen' }
+        $text = if ($result.Status -eq 'Failed') { [string]$result.Error } else { "$($result.WarningCount) Warnungen. Protokoll: $RunDirectory" }
+        try { Show-SetupNotification $title $text } catch { Write-JobLine "Benachrichtigung konnte nicht angezeigt werden: $($_.Exception.Message)" }
+    }
     if ($locked) { $mutex.ReleaseMutex() }
     if ($mutex) { $mutex.Dispose() }
 }

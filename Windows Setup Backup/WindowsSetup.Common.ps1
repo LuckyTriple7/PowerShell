@@ -1,6 +1,6 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 # Shared helpers. Run Backup-WindowsSetup.ps1 or Restore-WindowsSetup.ps1.
-$script:SetupBackupVersion = '1.1.1.0'
+$script:SetupBackupVersion = '1.2.0.0'
 function Write-SetupJson {
     param($Value, [string]$Path)
     ConvertTo-Json -InputObject $Value -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8

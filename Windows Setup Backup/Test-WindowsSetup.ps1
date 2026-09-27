@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
@@ -91,6 +91,53 @@ try {
         catch { if ($_.Exception.Message -notlike 'Unbekannte oder fehlende Schemaversion:*') { throw } }
     }
 
+    Test-Case 'Invalid KeepLast and unencrypted sensitive backup are rejected' {
+        $request = [pscustomobject]@{ SchemaVersion = 1; Operation = 'Backup'; Destination = (Join-Path $testRoot 'Destination'); KeepLast = -1 }
+        try { Test-SetupRequest $request; throw 'Negatives KeepLast wurde akzeptiert.' }
+        catch { if ($_.Exception.Message -notlike 'KeepLast*') { throw } }
+        $request = [pscustomobject]@{ SchemaVersion = 1; Operation = 'Backup'; Destination = (Join-Path $testRoot 'Destination'); CreateArchive = $true; IncludeSensitiveData = $true; ProtectedArchivePassword = '' }
+        try { Test-SetupRequest $request; throw 'Schlüssel ohne Verschlüsselung wurden akzeptiert.' }
+        catch { if ($_.Exception.Message -notlike 'WLAN- und SSH-Schlüssel*') { throw } }
+    }
+
+    Test-Case 'Retention keeps the newest backups and ignores foreign items' {
+        $root = Join-Path $testRoot 'Retention'
+        $names = @('TEST-PC-20260101-080000-000','TEST-PC-20260102-080000-000','TEST-PC-20260103-080000-000','TEST-PC-20260104-080000-000')
+        foreach ($name in $names + 'Fremder-Ordner') {
+            New-Item -ItemType Directory -Path (Join-Path $root $name) -Force | Out-Null
+            Save-SetupDocument ([ordered]@{ SchemaVersion = 1; Computer = 'TEST-PC'; Created = (Get-Date).ToString('o'); Files = @() }) (Join-Path $root "$name\manifest.json")
+        }
+        $removed = @(Invoke-SetupBackupRetention -Destination $root -KeepLast 2 -Computer 'TEST-PC')
+        Assert-True (@($removed | Where-Object Removed).Count -eq 2) "Erwartet 2 gelöschte Sicherungen, erhalten $(@($removed | Where-Object Removed).Count)."
+        Assert-True (Test-Path -LiteralPath (Join-Path $root $names[3])) 'Neueste Sicherung wurde gelöscht.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $root $names[2])) 'Zweitneueste Sicherung wurde gelöscht.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $root $names[0]))) 'Älteste Sicherung blieb erhalten.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $root 'Fremder-Ordner')) 'Fremder Ordner wurde gelöscht.'
+        $latest = Get-SetupLatestBackupTime $root 'TEST-PC'
+        Assert-True ($latest -eq [datetime]'2026-01-04 08:00:00') "Falscher Zeitpunkt der letzten Sicherung: $latest"
+    }
+
+    Test-Case 'Personal restore validates checksums in preview' {
+        $personalBackup = Join-Path $testRoot 'PersonalBackup'
+        New-Item -ItemType Directory -Path (Join-Path $personalBackup 'Personal\Ssh') -Force | Out-Null
+        Save-SetupDocument ([ordered]@{ SchemaVersion = 1; Computer = 'TEST-PC'; Files = @() }) (Join-Path $personalBackup 'manifest.json')
+        Set-Content -LiteralPath (Join-Path $personalBackup 'Personal\Ssh\config') -Value 'Host test' -Encoding ASCII
+        $hash = (Get-FileHash -LiteralPath (Join-Path $personalBackup 'Personal\Ssh\config') -Algorithm SHA256).Hash
+        $document = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = $true; Fonts = @(); WlanProfiles = @(); SshFiles = @([ordered]@{ File = 'Personal\Ssh\config'; SHA256 = $hash }); References = @() }
+        Save-SetupDocument $document (Join-Path $personalBackup 'personal-settings.json')
+        & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') -BackupPath $personalBackup -SshKeys -WhatIf | Out-Null
+        $document.SshFiles[0].SHA256 = '0' * 64
+        Save-SetupDocument $document (Join-Path $personalBackup 'personal-settings.json')
+        try { & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') -BackupPath $personalBackup -SshKeys -WhatIf | Out-Null; throw 'Falsche Prüfsumme wurde akzeptiert.' }
+        catch { if ($_.Exception.Message -notlike 'Prüfsumme stimmt nicht:*') { throw } }
+    }
+
+    Test-Case 'GUI builds with the new controls' {
+        $state = Join-Path $testRoot 'GuiState'
+        $gui = & (Join-Path $PSScriptRoot 'WindowsSetup-GUI.ps1') -ValidateOnly -StateDirectory $state
+        Assert-True ($gui.Tabs -eq 4) "Unerwartete Reiteranzahl: $($gui.Tabs)"
+    }
+
     Test-Case 'Chocolatey version capture preserves native exit code' {
         $choco = Get-SetupChocolateyPath
         if (-not $choco) { return }
@@ -107,6 +154,7 @@ try {
         $backupResult = @($output | Where-Object { $_.PSObject.Properties['BackupPath'] })
         Assert-True ($backupResult.Count -eq 1) 'Direktes Backup lieferte kein eindeutiges Ergebnisobjekt.'
         Assert-True (Test-Path -LiteralPath (Join-Path $backupResult[0].BackupPath 'manifest.json') -PathType Leaf) 'Veröffentlichtes Ordner-Backup enthält kein Manifest.'
+        $script:folderBackupPath = $backupResult[0].BackupPath
         Assert-True (@(Get-ChildItem -LiteralPath $destination -Filter '.wsb-*' -Force).Count -eq 0) 'Temporärer Veröffentlichungsname blieb liegen.'
     }
 
@@ -132,7 +180,7 @@ try {
         if (-not $sevenZipPath) { Write-Host 'SKIP: 7-Zip nicht installiert.' -ForegroundColor Yellow; return }
         $password = 'a b\ ' + [char]0x00C4 + [char]0x20AC + ' c\\'
         $destination = Join-Path $testRoot 'DirectSevenZipBackup'
-        $output = & (Join-Path $PSScriptRoot 'Backup-WindowsSetup.ps1') -Destination $destination -SkipWinget -SkipPython -SkipChocolatey -CreateArchive -ArchivePassword $password 3>$null
+        $output = & (Join-Path $PSScriptRoot 'Backup-WindowsSetup.ps1') -Destination $destination -SkipWinget -SkipPython -SkipChocolatey -CreateArchive -ArchivePassword $password -IncludeSensitiveData 3>$null
         $backupResult = @($output | Where-Object { $_.PSObject.Properties['BackupPath'] })
         Assert-True ($backupResult.Count -eq 1) 'Direktes 7z-Backup lieferte kein eindeutiges Ergebnisobjekt.'
         $archive = $backupResult[0].BackupPath
@@ -145,6 +193,34 @@ try {
         $process = [Diagnostics.Process]::Start($startInfo)
         $null = $process.StandardOutput.ReadToEnd(); $null = $process.StandardError.ReadToEnd(); $process.WaitForExit()
         Assert-True ($process.ExitCode -eq 0) "7-Zip lehnte das woertliche Passwort ab (Exitcode $($process.ExitCode))."
+        $personal = Read-SetupBackupDocument $archive 'personal-settings.json' $password
+        Assert-True ([bool]$personal.SensitiveIncluded) 'Sensible Daten wurden trotz Option nicht erfasst.'
+        $script:sevenZipBackup = $archive; $script:sevenZipPassword = $password
+    }
+
+    Test-Case 'Integrity check accepts intact and detects tampered folder backups' {
+        if (-not $script:folderBackupPath) { throw 'Ordner-Backup aus vorherigem Test fehlt.' }
+        $intact = Test-SetupBackupIntegrity $script:folderBackupPath
+        Assert-True ($intact.Problems.Count -eq 0) "Intaktes Backup meldet Probleme: $($intact.Problems -join '; ')"
+        Assert-True ($intact.CheckedFiles -gt 0) 'Es wurden keine Dateien geprüft.'
+        $copy = Join-Path $testRoot 'TamperedBackup'
+        Copy-Item -LiteralPath $script:folderBackupPath -Destination $copy -Recurse
+        $victim = @(Get-ChildItem -LiteralPath (Join-Path $copy 'Files') -File -Recurse)[0]
+        Add-Content -LiteralPath $victim.FullName -Value 'manipuliert'
+        $tampered = Test-SetupBackupIntegrity $copy
+        Assert-True ($tampered.Problems.Count -eq 1 -and $tampered.Problems[0] -like 'Prüfsumme stimmt nicht:*') "Manipulation nicht erkannt: $($tampered.Problems -join '; ')"
+    }
+
+    Test-Case 'Verify job checks an encrypted archive' {
+        if (-not $script:sevenZipBackup) { Write-Host 'SKIP: kein 7z-Backup.' -ForegroundColor Yellow; return }
+        $request = [pscustomobject]@{ SchemaVersion = 1; Operation = 'Verify'; BackupPath = $script:sevenZipBackup; ProtectedArchivePassword = (Protect-SetupSecret $script:sevenZipPassword) }
+        $requestPath = Join-Path $testRoot 'verify-request.json'; $run = Join-Path $testRoot 'VerifyRun'
+        Save-SetupDocument $request $requestPath
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Invoke-WindowsSetupJob.ps1') -RequestPath $requestPath -RunDirectory $run
+        $code = $LASTEXITCODE
+        $result = Read-SetupDocument (Join-Path $run 'result.json')
+        Assert-True ($code -eq 0 -and $result.Status -eq 'Completed') "Prüfung fehlgeschlagen: Exitcode $code, $($result.Status), $($result.Error)"
+        Assert-True ($result.VerifiedFiles -gt 0) 'Prüfauftrag hat keine Dateien geprüft.'
     }
 
     Test-Case 'ZIP preview cleans extraction and reports warnings' {

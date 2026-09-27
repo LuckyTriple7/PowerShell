@@ -2,6 +2,15 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.2.0.0] - 2026-09-27
+### Sicherheit, Aufbewahrung und weitere Bereiche
+- Das Archivpasswort muss in der GUI wiederholt werden; nur ein bestätigtes Passwort wird verwendet und gespeichert.
+- Aufbewahrung: Nach erfolgreicher Sicherung werden ältere Sicherungen dieses Rechners bis auf die neuesten N gelöscht.
+- Geplante Läufe melden Warnungen und Fehler als Windows-Benachrichtigung; der Zeitplan-Reiter warnt bei überfälliger Sicherung.
+- Neue Aktion **Sicherung prüfen** vergleicht alle Dateien eines Backups mit den Prüfsummen im Manifest.
+- Benutzerschriftarten, optional WLAN-Profile und SSH-Schlüssel (nur verschlüsseltes 7z) werden gesichert und wiederhergestellt; hosts, Energieplan und Standard-App-Zuordnungen liegen als Referenz bei.
+- Umlaute in Meldungen des Hintergrundauftrags werden unter Windows PowerShell 5.1 korrekt angezeigt.
+
 ## [1.1.1.0] - 2026-09-06
 ### Stabilisierung von Backup und Restore
 - Persistierte Aufträge werden typgeprüft; ältere Zeitpläne erhalten sichere Defaults für später ergänzte Optionen.

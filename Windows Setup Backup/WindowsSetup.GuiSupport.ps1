@@ -264,20 +264,33 @@ function Remove-SetupBackup {
 function Test-SetupRequest {
     param($Request)
     if ($Request.SchemaVersion -ne 1) { throw 'Unbekannte Auftragsversion.' }
-    if ($Request.Operation -notin @('Backup','Restore')) { throw 'Unbekannte Aktion.' }
+    if ($Request.Operation -notin @('Backup','Restore','Verify')) { throw 'Unbekannte Aktion.' }
     $booleanFields = if ($Request.Operation -eq 'Backup') {
-        @('IncludeDeveloperSettings','SkipWinget','SkipPython','SkipChocolatey','AcceptSourceAgreements','CreateArchive')
-    } else {
+        @('IncludeDeveloperSettings','SkipWinget','SkipPython','SkipChocolatey','AcceptSourceAgreements','CreateArchive','IncludeSensitiveData')
+    } elseif ($Request.Operation -eq 'Restore') {
         @('Preview','Programs','Settings','Shortcuts','IncludeCommonStartMenu','UseSavedVersions','AcceptAgreements','PythonPackages',
             'VSCodeExtensions','PowerShellModules','UserEnvironment','MachineEnvironment','WindowsComponents','Connections')
-    }
+    } else { @() }
+    # Added after 1.1.1.0; absent in older requests and then treated as false.
+    $optionalRestoreFields = @('Fonts','WlanProfiles','SshKeys')
+    if ($Request.Operation -eq 'Restore') { $booleanFields += $optionalRestoreFields }
     foreach ($name in $booleanFields) {
         $property = $Request.PSObject.Properties[$name]
-        if ($Request.Operation -eq 'Restore' -and (-not $property -or $null -eq $property.Value)) { throw "Boolesches Pflichtfeld fehlt im Wiederherstellungsauftrag: $name" }
+        if ($Request.Operation -eq 'Restore' -and $name -notin $optionalRestoreFields -and (-not $property -or $null -eq $property.Value)) { throw "Boolesches Pflichtfeld fehlt im Wiederherstellungsauftrag: $name" }
         if ($property -and $null -eq $property.Value) { throw "Auftragsfeld muss true oder false sein: $name" }
         if ($property -and $null -ne $property.Value -and $property.Value -isnot [bool]) { throw "Auftragsfeld muss true oder false sein: $name" }
     }
+    if ($Request.Operation -eq 'Verify') {
+        $root = Get-SetupAbsoluteDirectory $Request.BackupPath
+        $manifest = Read-SetupBackupDocument $root 'manifest.json' (Unprotect-SetupSecret ([string]$Request.ProtectedArchivePassword))
+        if ($manifest.SchemaVersion -ne 1) { throw 'Unbekannte Sicherungsversion.' }
+        return
+    }
     if ($Request.Operation -eq 'Backup') {
+        $keepLast = $Request.PSObject.Properties['KeepLast']
+        if ($keepLast -and $null -ne $keepLast.Value) {
+            if (-not ($keepLast.Value -is [int] -or $keepLast.Value -is [long]) -or $keepLast.Value -lt 0 -or $keepLast.Value -gt 365) { throw 'KeepLast muss eine ganze Zahl von 0 bis 365 sein.' }
+        }
         $destination = Get-SetupAbsoluteDirectory $Request.Destination
         foreach ($python in @($Request.PythonExecutables | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
             if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Zusätzlicher Python-Interpreter fehlt: $python" }
@@ -297,7 +310,11 @@ function Test-SetupRequest {
         if (-not [string]::IsNullOrEmpty([string]$Request.ProtectedArchivePassword) -and $Request.PSObject.Properties['CreateArchive'] -and -not [bool]$Request.CreateArchive) {
             throw 'Ein Archivpasswort erfordert die Option Archiv erstellen.'
         }
-        Assert-SetupArchivePassword (Unprotect-SetupSecret ([string]$Request.ProtectedArchivePassword))
+        $backupPassword = Unprotect-SetupSecret ([string]$Request.ProtectedArchivePassword)
+        Assert-SetupArchivePassword $backupPassword
+        if ($Request.PSObject.Properties['IncludeSensitiveData'] -and [bool]$Request.IncludeSensitiveData -and -not ([bool]$Request.CreateArchive -and $backupPassword)) {
+            throw 'WLAN- und SSH-Schlüssel werden nur in ein verschlüsseltes 7z-Archiv (Archiv mit Passwort) gesichert.'
+        }
     } else {
         $root = Get-SetupAbsoluteDirectory $Request.BackupPath
         $archivePassword = Unprotect-SetupSecret ([string]$Request.ProtectedArchivePassword)
@@ -308,7 +325,11 @@ function Test-SetupRequest {
         $chocolateyPackages = [string[]]@($Request.ChocolateyPackages | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $extrasSelected = $customFolderKeys.Count -gt 0 -or $Request.VSCodeExtensions -or $Request.PowerShellModules -or
             $Request.UserEnvironment -or $Request.MachineEnvironment -or $Request.WindowsComponents -or $Request.Connections -or
-            $storePackageFamilies.Count -gt 0 -or $chocolateyPackages.Count -gt 0
+            $storePackageFamilies.Count -gt 0 -or $chocolateyPackages.Count -gt 0 -or
+            [bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys
+        if (([bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys) -and -not (Test-SetupBackupDocument $root 'personal-settings.json' $archivePassword)) {
+            throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile oder SSH-Schlüssel.'
+        }
         if (-not ($Request.Programs -or $Request.Settings -or $Request.Shortcuts -or $Request.PythonPackages -or $extrasSelected)) { throw 'Mindestens einen Bestandteil zur Wiederherstellung auswählen.' }
         if ($Request.Programs -and -not $manifest.WingetReady) { throw 'Dieser Sicherung fehlt eine verwendbare WinGet-Liste.' }
         if ($Request.IncludeCommonStartMenu -and -not $Request.Shortcuts) { throw 'Gemeinsames Startmenü erfordert Startmenü-Verknüpfungen.' }
@@ -354,11 +375,13 @@ function Get-SetupTaskName {
 }
 
 function Get-SetupTaskArguments {
-    param([string]$WorkerPath, [string]$RequestPath)
+    param([string]$WorkerPath, [string]$RequestPath, [switch]$Notify)
     foreach ($path in @($WorkerPath, $RequestPath)) {
         if ($path -match '["\r\n]') { throw 'Ungültiger Pfad für die Aufgabenplanung.' }
     }
-    '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -RequestPath "{1}"' -f $WorkerPath, $RequestPath
+    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -RequestPath "{1}"' -f $WorkerPath, $RequestPath
+    if ($Notify) { $arguments += ' -Notify' }
+    return $arguments
 }
 
 function Get-ManagedSetupTask {
@@ -383,7 +406,7 @@ function Register-SetupBackupTask {
     Test-SetupRequest $request
     if ($request.Operation -ne 'Backup') { throw 'Geplant werden ausschließlich Sicherungen.' }
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-SetupTaskArguments $WorkerPath $RequestPath) -WorkingDirectory (Split-Path $WorkerPath -Parent)
+    $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-SetupTaskArguments $WorkerPath $RequestPath -Notify) -WorkingDirectory (Split-Path $WorkerPath -Parent)
     $trigger = if ($Frequency -eq 'Daily') { New-ScheduledTaskTrigger -Daily -At $Time } else { New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Day -At $Time }
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     $options = @{ StartWhenAvailable = $true; MultipleInstances = 'IgnoreNew'; ExecutionTimeLimit = [timespan]::FromHours(4) }
@@ -392,4 +415,87 @@ function Register-SetupBackupTask {
     if ($PSCmdlet.ShouldProcess((Get-SetupTaskName), 'Geplante Sicherung anlegen oder aktualisieren')) {
         Register-ScheduledTask -TaskName (Get-SetupTaskName) -TaskPath '\' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Windows Setup Backup GUI; Benutzer: $user; Konfiguration: $RequestPath" -Force -ErrorAction Stop | Out-Null
     }
+}
+
+function Get-SetupBackupNamePattern {
+    param([string]$Computer = $env:COMPUTERNAME)
+    '^' + [regex]::Escape($Computer) + '-(\d{8}-\d{6})-\d{3}(\.zip|\.7z)?$'
+}
+
+function Get-SetupLatestBackupTime {
+    param([string]$Destination, [string]$Computer = $env:COMPUTERNAME)
+    try { $root = Get-SetupAbsoluteDirectory $Destination } catch { return $null }
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
+    $pattern = Get-SetupBackupNamePattern $Computer
+    $stamps = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Name -match $pattern) { [datetime]::ParseExact($Matches[1], 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture) }
+    })
+    if ($stamps.Count -eq 0) { return $null }
+    return ($stamps | Sort-Object -Descending | Select-Object -First 1)
+}
+
+function Invoke-SetupBackupRetention {
+    # Keeps the newest $KeepLast backups of this computer; everything older goes through Remove-SetupBackup's checks.
+    param([Parameter(Mandatory)][string]$Destination, [int]$KeepLast, [string]$ArchivePassword = '', [string]$Computer = $env:COMPUTERNAME)
+    if ($KeepLast -le 0) { return }
+    $root = Get-SetupAbsoluteDirectory $Destination
+    $pattern = Get-SetupBackupNamePattern $Computer
+    $candidates = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop | Where-Object { $_.Name -match $pattern } |
+        Sort-Object @{ Expression = { $_.Name -replace '\.(zip|7z)$','' } } -Descending)
+    foreach ($item in @($candidates | Select-Object -Skip $KeepLast)) {
+        try {
+            Remove-SetupBackup -BackupPath $item.FullName -SourceRoot $root -ArchivePassword $ArchivePassword -Confirm:$false
+            [pscustomobject]@{ Path = $item.FullName; Removed = $true; Error = $null }
+        } catch { [pscustomobject]@{ Path = $item.FullName; Removed = $false; Error = $_.Exception.Message } }
+    }
+}
+
+function Test-SetupBackupIntegrity {
+    # Recomputes every recorded checksum of an unpacked backup; an empty Problems list means it is intact.
+    param([Parameter(Mandatory)][string]$BackupPath)
+    $root = (Resolve-Path -LiteralPath $BackupPath).ProviderPath.TrimEnd('\')
+    $problems = [Collections.Generic.List[string]]::new()
+    $checked = 0
+    $manifest = Read-SetupDocument (Join-Path $root 'manifest.json')
+    if ($manifest.SchemaVersion -ne 1) { throw 'Unbekannte Sicherungsversion.' }
+    $entries = [Collections.Generic.List[object]]::new()
+    foreach ($file in @($manifest.Files)) {
+        $stored = if ($file.Stored) { [string]$file.Stored } else { "Files\$($file.Key)\$($file.Relative)" }
+        $entries.Add([pscustomobject]@{ Stored = $stored; SHA256 = [string]$file.SHA256 })
+    }
+    $personalPath = Join-Path $root 'personal-settings.json'
+    if (Test-Path -LiteralPath $personalPath -PathType Leaf) {
+        $personal = Read-SetupDocument $personalPath
+        foreach ($item in @(@($personal.Fonts) + @($personal.WlanProfiles) + @($personal.SshFiles))) {
+            if ($item) { $entries.Add([pscustomobject]@{ Stored = [string]$item.File; SHA256 = [string]$item.SHA256 }) }
+        }
+    }
+    foreach ($entry in $entries) {
+        try {
+            $path = Join-SetupSafePath $root $entry.Stored
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $problems.Add("Datei fehlt: $($entry.Stored)"); continue }
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $entry.SHA256) { $problems.Add("Prüfsumme stimmt nicht: $($entry.Stored)"); continue }
+            $checked++
+        } catch { $problems.Add("Ungültiger Eintrag $($entry.Stored): $($_.Exception.Message)") }
+    }
+    # Only the tool's own documents: backed-up config files (e.g. VS Code settings with comments) need not be strict JSON.
+    $documents = @(Get-ChildItem -LiteralPath $root -Filter '*.json' -File -Force)
+    if (Test-Path -LiteralPath (Join-Path $root 'Python\environments.json') -PathType Leaf) { $documents += Get-Item -LiteralPath (Join-Path $root 'Python\environments.json') }
+    foreach ($document in $documents) {
+        try { $null = Read-SetupDocument $document.FullName } catch { $problems.Add("JSON-Dokument nicht lesbar: $($document.FullName.Substring($root.Length + 1))") }
+    }
+    if ($manifest.WingetReady -and -not (Test-Path -LiteralPath (Join-Path $root 'winget-packages.json') -PathType Leaf)) { $problems.Add('winget-packages.json fehlt trotz erfolgreichem WinGet-Export.') }
+    [pscustomobject]@{ CheckedFiles = $checked; Problems = @($problems) }
+}
+
+function Show-SetupNotification {
+    param([string]$Title, [string]$Message)
+    $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    $null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+    $xml = [Windows.Data.Xml.Dom.XmlDocument]::new()
+    $xml.LoadXml(('<toast><visual><binding template="ToastGeneric"><text>{0}</text><text>{1}</text></binding></visual></toast>' -f
+        [Security.SecurityElement]::Escape($Title), [Security.SecurityElement]::Escape($Message)))
+    # Windows PowerShell's registered AppUserModelID, so no own shortcut or registration is needed.
+    $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 }

@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$BackupPath, [switch]$IncludeDeveloperSettings, [switch]$SkipChocolatey)
+param([Parameter(Mandatory)][string]$BackupPath, [switch]$IncludeDeveloperSettings, [switch]$SkipChocolatey, [switch]$IncludeSensitiveData)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
 $warnings = [Collections.Generic.List[string]]::new()
@@ -115,7 +115,85 @@ if ($chocoPath) {
 }
 Write-SetupJson @{ SchemaVersion = 1; Chocolatey = $chocolatey } (Join-Path $BackupPath 'package-managers.json')
 
+function Add-PersonalFile {
+    param([string]$Source, [string]$Stored)
+    $target = Join-SetupSafePath $BackupPath $Stored
+    New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $target -Force
+    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+}
+$personal = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = [bool]$IncludeSensitiveData; Fonts = @(); WlanProfiles = @(); SshFiles = @(); References = @() }
+# Per-user fonts only; fonts in C:\Windows\Fonts come with Windows or their installers.
+try {
+    $fontRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
+    $fontKey = Get-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts' -ErrorAction SilentlyContinue
+    if ($fontKey) {
+        foreach ($name in $fontKey.GetValueNames()) {
+            $path = [string]$fontKey.GetValue($name)
+            if (-not [IO.Path]::IsPathRooted($path)) { $path = Join-Path $fontRoot $path }
+            $leaf = [IO.Path]::GetFileName($path)
+            if (-not $leaf -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or $leaf -notmatch '^[^\\/:*?"<>|]+$') { continue }
+            if (-not ([IO.Path]::GetFullPath($path)).StartsWith($fontRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $stored = "Personal\Fonts\$leaf"
+            $personal.Fonts += [pscustomobject]@{ Name = $name; File = $stored; SHA256 = (Add-PersonalFile $path $stored) }
+        }
+    }
+} catch { Add-ExtraWarning "Benutzerschriftarten konnten nicht gesichert werden: $_" }
+if ($IncludeSensitiveData) {
+    $wlanTemp = Join-Path ([IO.Path]::GetTempPath()) ('wsbw' + [guid]::NewGuid().ToString('N').Substring(0,8))
+    try {
+        # netsh truncates long folder paths and then writes elsewhere, so export into a short private folder first.
+        New-Item -ItemType Directory -Path $wlanTemp -ErrorAction Stop | Out-Null
+        $netshOutput = @(& netsh.exe wlan export profile key=clear folder="$wlanTemp" 2>&1)
+        $exported = @(Get-ChildItem -LiteralPath $wlanTemp -Filter '*.xml' -File)
+        if ($LASTEXITCODE -ne 0 -and $exported.Count -eq 0) { Write-Host "WLAN-Profile nicht exportiert (kein WLAN-Dienst?): $(($netshOutput | Out-String).Trim())" }
+        $index = 0
+        foreach ($file in $exported) {
+            $index++
+            $profileName = try { ([xml](Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8)).WLANProfile.name } catch { $file.BaseName }
+            $stored = 'Personal\Wlan\wlan-{0:D3}.xml' -f $index
+            $personal.WlanProfiles += [pscustomobject]@{ Name = [string]$profileName; File = $stored; SHA256 = (Add-PersonalFile $file.FullName $stored) }
+        }
+    } catch { Add-ExtraWarning "WLAN-Profile konnten nicht gesichert werden: $_" }
+    finally { if (Test-Path -LiteralPath $wlanTemp) { Remove-Item -LiteralPath $wlanTemp -Recurse -Force -ErrorAction SilentlyContinue } }
+    try {
+        $sshRoot = Join-Path $env:USERPROFILE '.ssh'
+        if (Test-Path -LiteralPath $sshRoot -PathType Container) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $sshRoot -File -Force -ErrorAction Stop)) {
+                if ($file.LinkType) { Add-ExtraWarning "Verknüpfte SSH-Datei wurde ausgelassen: $($file.FullName)"; continue }
+                $stored = "Personal\Ssh\$($file.Name)"
+                $personal.SshFiles += [pscustomobject]@{ File = $stored; SHA256 = (Add-PersonalFile $file.FullName $stored) }
+            }
+        }
+    } catch { Add-ExtraWarning "SSH-Schlüssel konnten nicht gesichert werden: $_" }
+}
+# Reference files for manual restore; power plans and app associations need an elevated backup.
+try {
+    $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+    if (Test-Path -LiteralPath $hosts -PathType Leaf) { $null = Add-PersonalFile $hosts 'Personal\Reference\hosts'; $personal.References += [pscustomobject]@{ Name = 'hosts'; File = 'Personal\Reference\hosts'; Status = 'Exported' } }
+} catch { Add-ExtraWarning "hosts-Datei konnte nicht gesichert werden: $_" }
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $referenceRoot = Join-SetupSafePath $BackupPath 'Personal\Reference'
+    New-Item -ItemType Directory -Path $referenceRoot -Force | Out-Null
+    try {
+        $scheme = [regex]::Match([string](& powercfg.exe /getactivescheme), '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}').Value
+        if (-not $scheme) { throw 'Aktiver Energieplan nicht erkannt.' }
+        $null = & powercfg.exe /export (Join-Path $referenceRoot 'power-scheme.pow') $scheme 2>&1
+        if ((Get-Item -LiteralPath (Join-Path $referenceRoot 'power-scheme.pow') -ErrorAction Stop).Length -eq 0) { throw "powercfg Exitcode $LASTEXITCODE" }
+        $personal.References += [pscustomobject]@{ Name = 'PowerScheme'; File = 'Personal\Reference\power-scheme.pow'; Status = 'Exported' }
+    } catch { Add-ExtraWarning "Energieplan konnte nicht exportiert werden: $_" }
+    try {
+        $null = & dism.exe /Online "/Export-DefaultAppAssociations:$(Join-Path $referenceRoot 'app-associations.xml')" 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "DISM Exitcode $LASTEXITCODE" }
+        $personal.References += [pscustomobject]@{ Name = 'AppAssociations'; File = 'Personal\Reference\app-associations.xml'; Status = 'Exported' }
+    } catch { Add-ExtraWarning "Standard-App-Zuordnungen konnten nicht exportiert werden: $_" }
+} else {
+    Write-Host 'Energieplan und Standard-App-Zuordnungen wurden übersprungen: Dafür sind Administratorrechte erforderlich.'
+}
+Write-SetupJson $personal (Join-Path $BackupPath 'personal-settings.json')
+
 [pscustomobject]@{ WarningCount = $warnings.Count; Warnings = @($warnings); EnvironmentCount = $environment.Count
     FeatureCount = $features.Count + $capabilities.Count; PrinterCount = $printers.Count; DriveCount = $drives.Count
     ExtensionCount = @($developer.VSCodeProducts | ForEach-Object { $_.Extensions }).Count; ModuleCount = @($developer.PowerShellModules).Count
-    ChocolateyCount = @($chocolatey.Packages).Count }
+    ChocolateyCount = @($chocolatey.Packages).Count; FontCount = @($personal.Fonts).Count
+    WlanCount = @($personal.WlanProfiles).Count; SshCount = @($personal.SshFiles).Count }

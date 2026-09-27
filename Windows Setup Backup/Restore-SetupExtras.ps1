@@ -12,6 +12,9 @@ param(
     [string[]]$StorePackageFamilies = @(),
     [string[]]$ChocolateyPackages = @(),
     [switch]$UseSavedVersions,
+    [switch]$Fonts,
+    [switch]$WlanProfiles,
+    [switch]$SshKeys,
     [string]$UndoRoot = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -81,6 +84,77 @@ foreach ($key in @($CustomFolderKeys | Select-Object -Unique)) {
             if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Quelldatei wurde nach der Vorabprüfung verändert: $source" }
             Copy-Item -LiteralPath $source -Destination $target -Force
             if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $file.SHA256) { throw "Wiederhergestellte Datei hat eine falsche Prüfsumme: $target" }
+        }
+    }
+}
+
+if ($Fonts -or $WlanProfiles -or $SshKeys) {
+    $personalPath = Join-Path $backup 'personal-settings.json'
+    if (-not (Test-Path -LiteralPath $personalPath)) { throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile oder SSH-Schlüssel.' }
+    $personal = Get-Content -LiteralPath $personalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-SetupDocumentSchema $personal 'personal-settings.json'
+    function Get-PersonalSource {
+        param($Item, [string]$Folder)
+        if ([string]$Item.File -notlike "Personal\$Folder\*") { throw "Ungültiger Eintrag in personal-settings.json: $($Item.File)" }
+        $source = Join-SetupSafePath $backup ([string]$Item.File)
+        if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $Item.SHA256) { throw "Prüfsumme stimmt nicht: $source" }
+        return $source
+    }
+    function Copy-PersonalFile {
+        param([string]$Source, [string]$Target, [string]$UndoName, [string]$Hash)
+        Assert-SetupNoReparsePoint $Target
+        if ((Test-Path -LiteralPath $Target -PathType Leaf) -and (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash -eq $Hash) { return $false }
+        if (-not $PSCmdlet.ShouldProcess($Target, 'Datei wiederherstellen (vorhandene Datei vorher sichern)')) { return $false }
+        if (Test-Path -LiteralPath $Target -PathType Leaf) {
+            $previous = Join-SetupSafePath $customUndo $UndoName
+            New-Item -ItemType Directory -Path (Split-Path $previous -Parent) -Force | Out-Null
+            Copy-Item -LiteralPath $Target -Destination $previous -Force
+        }
+        New-Item -ItemType Directory -Path (Split-Path $Target -Parent) -Force | Out-Null
+        Copy-Item -LiteralPath $Source -Destination $Target -Force
+        return $true
+    }
+    if ($Fonts) {
+        $fontRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
+        $fontKey = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
+        foreach ($font in @($personal.Fonts)) {
+            $source = Get-PersonalSource $font 'Fonts'
+            $target = Join-SetupSafePath $fontRoot ([IO.Path]::GetFileName($source))
+            $null = Copy-PersonalFile $source $target "Fonts\$([IO.Path]::GetFileName($source))" $font.SHA256
+            if ([string]$font.Name -notmatch '^[^\x00]+$') { throw "Ungültiger Schriftartname: $($font.Name)" }
+            $current = (Get-ItemProperty -LiteralPath $fontKey -Name $font.Name -ErrorAction SilentlyContinue).($font.Name)
+            if ($current -ne $target -and $PSCmdlet.ShouldProcess([string]$font.Name, 'Benutzerschriftart registrieren')) {
+                if (-not (Test-Path -LiteralPath $fontKey)) { New-Item -Path $fontKey -Force | Out-Null }
+                New-ItemProperty -LiteralPath $fontKey -Name $font.Name -Value $target -PropertyType String -Force | Out-Null
+            }
+        }
+        if (@($personal.Fonts).Count -gt 0) { Write-Host 'Schriftarten stehen nach einer erneuten Anmeldung in allen Programmen zur Verfügung.' }
+    }
+    if ($WlanProfiles) {
+        if (-not $personal.SensitiveIncluded) { Write-Warning 'Diese Sicherung enthält keine WLAN-Profile (nur in verschlüsselten 7z-Backups).' }
+        foreach ($wlan in @($personal.WlanProfiles)) {
+            $source = Get-PersonalSource $wlan 'Wlan'
+            if ($PSCmdlet.ShouldProcess([string]$wlan.Name, 'WLAN-Profil für den aktuellen Benutzer hinzufügen')) {
+                # Short path for netsh, see backup; the file contains the key in plain text and is removed right away.
+                $shortCopy = Join-Path ([IO.Path]::GetTempPath()) ('wsbw' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.xml')
+                try {
+                    Copy-Item -LiteralPath $source -Destination $shortCopy -Force
+                    $netshOutput = @(& netsh.exe wlan add profile filename="$shortCopy" user=current 2>&1)
+                    if ($LASTEXITCODE -ne 0) { Write-Warning "WLAN-Profil konnte nicht hinzugefügt werden: $($wlan.Name): $(($netshOutput | Out-String).Trim())" }
+                    else { Write-Host "WLAN-Profil hinzugefügt: $($wlan.Name)" }
+                } finally { Remove-Item -LiteralPath $shortCopy -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+    if ($SshKeys) {
+        if (-not $personal.SensitiveIncluded) { Write-Warning 'Diese Sicherung enthält keine SSH-Schlüssel (nur in verschlüsselten 7z-Backups).' }
+        $sshRoot = Join-Path $env:USERPROFILE '.ssh'
+        foreach ($sshFile in @($personal.SshFiles)) {
+            $source = Get-PersonalSource $sshFile 'Ssh'
+            $name = [IO.Path]::GetFileName($source)
+            if ($name -notmatch '^[^\\/:*?"<>|]+$') { throw "Ungültiger SSH-Dateiname: $name" }
+            # The new file inherits the profile ACL (user, SYSTEM, Administrators), which OpenSSH accepts for private keys.
+            if (Copy-PersonalFile $source (Join-SetupSafePath $sshRoot $name) "Ssh\$name" $sshFile.SHA256) { Write-Host "SSH-Datei wiederhergestellt: $name" }
         }
     }
 }

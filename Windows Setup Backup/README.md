@@ -1,6 +1,6 @@
 # Windows-Setup sichern und wiederherstellen
 
-Aktuelle Version: **1.1.1.0**. Änderungen sind in [`CHANGELOG.md`](CHANGELOG.md) dokumentiert.
+Aktuelle Version: **1.2.0.0**. Änderungen sind in [`CHANGELOG.md`](CHANGELOG.md) dokumentiert.
 
 PowerShell-Skripte für eine spätere Neuinstallation. Bilder, Dokumente und andere persönliche Dateien sind ausgeschlossen; diese kommen über OneDrive. Programme werden als Installationsliste erfasst, nicht als installierte Programmdateien gesichert. Ansible ist für die Skripte nicht erforderlich und kann sie später aufrufen.
 
@@ -14,7 +14,13 @@ PowerShell-Skripte für eine spätere Neuinstallation. Bilder, Dokumente und and
 - **Wiederherstellung:** Backup-Ordner, übergeordneten Ordner oder direkt ein ZIP-/7z-Backup auswählen. Archive im gewählten Quellordner werden automatisch erkannt; für ein verschlüsseltes 7z-Backup das Archivpasswort angeben und die Liste aktualisieren. Ein daneben vorhandener entpackter Ordner bleibt als eigener Eintrag sichtbar, wird aber niemals automatisch anstelle des ausgewählten Archivs verwendet. Die gesicherten WinGet-Pakete werden mit Version aufgelistet und sind zunächst alle ausgewählt; nicht mehr benötigte Pakete können einzeln oder über **Keine auswählen** abgewählt werden. Bestandteile auswählen und zunächst **Vorschau (WhatIf)** verwenden. Für pip die gesicherte Umgebung und die gewünschte `python.exe` wählen. **Wiederherstellen** führt die ausgewählten Änderungen nach Bestätigung aus.
 - **Zusatzbereiche:** Verwendet die im Reiter Wiederherstellung markierte Sicherung. Hier werden benutzerdefinierte Ordner, Chocolatey-Pakete, Store-Apps, Erweiterungen, Module, Umgebungsvariablen, Windows-Komponenten, Drucker und Netzlaufwerke separat ausgewählt, geprüft und gestartet.
 - **Sicherung löschen:** In der Liste eine Sicherung markieren und **Sicherung löschen** wählen. Nach Bestätigung wird ausschließlich der ausgewählte Backup-Ordner oder das ausgewählte ZIP-/7z-Archiv dauerhaft entfernt. Ein separat entpackter Backup-Ordner beziehungsweise ein daneben vorhandenes Archiv bleibt erhalten. Bei OneDrive wird die Löschung synchronisiert. Während einer Sicherung oder Wiederherstellung ist das Löschen gesperrt. Automatisch gelöscht werden nur erkannte Backups mit ihrem ursprünglichen Namen.
-- **Zeitplan:** Tägliche oder wöchentliche Sicherung mit Uhrzeit und optionalem Akkubetrieb einrichten. **Zeitplan speichern** übernimmt die aktuellen Optionen aus dem Reiter Sicherung. Die Aufgabe lässt sich deaktivieren, aktivieren und entfernen; Backups bleiben erhalten.
+- **Zeitplan:** Tägliche oder wöchentliche Sicherung mit Uhrzeit und optionalem Akkubetrieb einrichten. **Zeitplan speichern** übernimmt die aktuellen Optionen aus dem Reiter Sicherung. Die Aufgabe lässt sich deaktivieren, aktivieren und entfernen; Backups bleiben erhalten. Endet ein geplanter Lauf mit Warnungen oder Fehler, erscheint eine Windows-Benachrichtigung. Der Reiter zeigt das Alter der letzten Sicherung im Ziel; ist sie bei täglichem Zeitplan älter als 2 Tage beziehungsweise bei wöchentlichem älter als 14 Tage, warnt die Statuszeile. Zeitpläne aus Version 1.1 erhalten die Benachrichtigung erst nach erneutem **Zeitplan speichern**.
+
+**Archivpasswort:** Das Passwort muss im Feld **Passwort wiederholen** identisch bestätigt werden, bevor es verwendet oder gespeichert wird. Es darf kein Anführungszeichen (`"`) enthalten.
+
+**Aufbewahrung:** Im Reiter Sicherung legt **Aufbewahrung** fest, wie viele der neuesten Sicherungen dieses Rechners im Zielordner bleiben (0 = alle). Ältere werden erst nach einer erfolgreichen neuen Sicherung und nur nach denselben Prüfungen wie beim manuellen Löschen entfernt. Sicherungen mit einem anderen Archivpasswort werden nicht gelöscht, sondern als Warnung gemeldet.
+
+**Sicherung prüfen:** Im Reiter Wiederherstellung entpackt **Sicherung prüfen** die markierte Sicherung temporär und vergleicht jede gespeicherte Datei mit der Prüfsumme im Manifest. So lässt sich vor dem Ernstfall bestätigen, dass Archiv und Passwort funktionieren.
 
 Laufende Aktionen zeigen ihre Ausgabe im Fenster und melden den Abschluss. Die GUI wartet beim Schließen auf das Ende einer laufenden Aktion. Einstellungen, Aufträge und Protokolle liegen unter `GuiState` und sind von Git ausgeschlossen. Geplante Läufe protokollieren unter `GuiState\Runs`; Ergebniscode 0 bedeutet Erfolg, 2 bedeutet Abschluss mit Warnungen, 1 bedeutet Fehler.
 
@@ -83,6 +89,9 @@ Optional: `-Destination 'E:\WindowsSetup'` für ein anderes Sicherungsziel oder 
 | `environment-variables.json` | Persistente Benutzer- und Systemvariablen einschließlich nicht expandierter Werte und Registry-Typ. Namen mit Hinweisen auf Passwort, Token, Secret oder API-Key werden markiert und ohne Wert gespeichert. |
 | `windows-components.json` | Aktivierte optionale Windows-Features und installierte Capabilities. Das vollständige Inventar erfordert eine als Administrator gestartete Sicherung. |
 | `devices-connections.json` | Druckerinventar und persistente Netzlaufwerke. Automatisch wiederherstellbar sind Netzwerkdrucker und Netzlaufwerke; lokale/WSD-/USB-Drucker bleiben wegen fehlender Treiberpakete Inventar. |
+| `personal-settings.json`, `Personal\Fonts` | Benutzerschriftarten aus `%LOCALAPPDATA%\Microsoft\Windows\Fonts` mit Prüfsummen; wiederherstellbar im Reiter Zusatzbereiche. |
+| `Personal\Wlan`, `Personal\Ssh` | Nur mit **WLAN-Profile und SSH-Schlüssel** (`-IncludeSensitiveData`) und ausschließlich in ein passwortgeschütztes 7z: alle WLAN-Profile einschließlich Schlüssel im Klartext und alle Dateien aus `~\.ssh`. Während der Sicherung liegen sie kurz unverschlüsselt unter `%TEMP%`. Wiederherstellung für den aktuellen Benutzer im Reiter Zusatzbereiche. |
+| `Personal\Reference` | Referenzdateien zur manuellen Wiederherstellung: `hosts`, bei als Administrator gestarteter Sicherung zusätzlich aktiver Energieplan (`powercfg /import`) und Standard-App-Zuordnungen (`Dism /Online /Import-DefaultAppAssociations`). |
 | `manifest.json` | Windows-Version, ursprünglicher Profilpfad, Dateiliste mit SHA256-Prüfsummen, Exportstatus und Warnungen. Wird erst am Ende des Laufs geschrieben. |
 
 Anwendungseinstellungen weiterer Programme müssen gezielt ergänzt werden. Lizenzaktivierungen, gespeicherte Anmeldungen, komplette Browserprofile, Treiber, laufende Programmzustände und angeheftete Taskleisten-Apps sind nicht enthalten.

@@ -17,7 +17,8 @@ param(
     [string[]]$CustomFolders = @(),
     [string[]]$ExcludedExtensions = @(),
     [switch]$CreateArchive,
-    [string]$ArchivePassword = ''
+    [string]$ArchivePassword = '',
+    [switch]$IncludeSensitiveData
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
@@ -77,6 +78,7 @@ $excluded = @($ExcludedExtensions | ForEach-Object {
 } | Where-Object { $_ } | Select-Object -Unique)
 if ($ArchivePassword -and -not $CreateArchive) { throw 'Ein Archivpasswort erfordert -CreateArchive.' }
 Assert-SetupArchivePassword $ArchivePassword
+if ($IncludeSensitiveData -and -not ($CreateArchive -and $ArchivePassword)) { throw '-IncludeSensitiveData erfordert ein verschlüsseltes Archiv (-CreateArchive -ArchivePassword).' }
 
 # Read uninstall keys directly: Win32_Product can trigger MSI repair operations.
 Write-BackupStep 1 'Installierte Programme erfassen ...'
@@ -212,7 +214,7 @@ foreach ($source in @($CustomFolders | Select-Object -Unique)) {
 }
 try {
     Write-BackupStatus 'Zusätzliche System-, Entwickler- und Verbindungsinventare werden erstellt ...'
-    $extraResult = & (Join-Path $PSScriptRoot 'Backup-SetupExtras.ps1') -BackupPath $backup -IncludeDeveloperSettings:$IncludeDeveloperSettings -SkipChocolatey:$SkipChocolatey
+    $extraResult = & (Join-Path $PSScriptRoot 'Backup-SetupExtras.ps1') -BackupPath $backup -IncludeDeveloperSettings:$IncludeDeveloperSettings -SkipChocolatey:$SkipChocolatey -IncludeSensitiveData:$IncludeSensitiveData
     foreach ($warning in @($extraResult.Warnings)) { Add-BackupWarning $warning }
 } catch { Add-BackupWarning "Zusätzliche Inventare konnten nicht vollständig erstellt werden: $_" }
 Write-BackupStep 6 'Windows-Einstellungen sichern ...'
@@ -269,6 +271,7 @@ $summary = @(
     "Chocolatey-Pakete: $($extraResult.ChocolateyCount)"
     "Umgebungsvariablen / Windows-Komponenten: $($extraResult.EnvironmentCount) / $($extraResult.FeatureCount)"
     "Drucker / Netzlaufwerke: $($extraResult.PrinterCount) / $($extraResult.DriveCount)"
+    ('Schriftarten / WLAN-Profile / SSH-Dateien: {0} / {1}' -f $extraResult.FontCount, $(if ($IncludeSensitiveData) { "$($extraResult.WlanCount) / $($extraResult.SshCount)" } else { 'nicht ausgewaehlt' }))
     "Gesicherte Dateien: $($files.Count)"
     "Registry-Einstellungen: $($registryValues.Count)"
     ('Startlayout: ' + $(if ($startLayoutReady) { 'exportiert; Pins manuell wiederherstellen' } else { 'NICHT exportiert' }))
