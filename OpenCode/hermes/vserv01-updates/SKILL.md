@@ -1,38 +1,20 @@
 ---
 name: vserv01-updates
-description: Ausführlicher Update-Check des Servers vserv01 – Debian-Pakete (Sicherheitsupdates), Docker-Images inkl. neuerer Versions-Tags und Hauptversionen, LiteLLM-Version. Nutzen bei Fragen nach Updates auf vserv01.
-version: 1.0.0
+description: Update-Check des Servers vserv01 – Debian-Pakete, Docker-Images inkl. neuerer Versionen, LiteLLM-Version, fertige Update-Befehle.
+version: 2.0.0
 author: LuckyTriple7 + Claude
 metadata:
   hermes:
-    tags: [vserv01, monitoring, updates]
+    tags: [vserv01, monitoring]
     category: devops
-    requires_toolsets: [terminal]
 ---
 
-# vserv01: Updates
+# vserv01-updates
 
-Nur Live-Daten, nichts erfinden, keine Websuche, Deutsch. Genau diese Aufrufe:
+Der Bericht kommt fertig formatiert vom Server.
 
-1. monitor apt_updates
-2. monitor image_updates mit check_new_versions=true
-   Antwortet es mit "Prüfung läuft noch", im Terminal `sleep 60` ausführen und image_updates mit denselben Parametern GENAU EINMAL erneut aufrufen. Läuft es dann immer noch, den Abschnitt "Prüfung läuft noch, später erneut fragen" nennen.
-3. Terminal: `python3 /config/.hermes/scripts/litellm_update.py --always`
+1. Genau EINEN Werkzeugaufruf machen: monitor report mit section="updates"
+   (Toolname: mcp__monitor__monitor_mcp_report)
+2. Das Ergebnis UNVERÄNDERT als Antwort ausgeben. Nichts weglassen, nichts umformulieren, nichts ergänzen, kein Text davor oder danach.
 
-Verboten: alle uptime_kuma-Werkzeuge, weitere Aufrufe. Liefert ein Aufruf einen Fehler, schreibe für diesen Abschnitt "nicht verfügbar" und mache weiter.
-
-Gib die Antwort GENAU EINMAL aus, ohne Text davor oder danach, mit je einer Leerzeile zwischen den Abschnitten:
-
-🔄 **vserv01 – Updates**
-
-📦 **Debian**
-<Anzahl Updates, davon Sicherheitsupdates; Sicherheitsupdates einzeln mit alter → neuer Version, übrige nur als Anzahl; Neustart nötig ja/nein>
-
-🐳 **Docker-Images**
-<"Neues Image (pull nötig)", "neueres Image gepullt, Container alt", "neuere Version (Tag ändern)", "neue Hauptversion" je mit Image → Ziel; sonst "alle aktuell". Lokal gebaute Images weglassen>
-
-🤖 **LiteLLM**
-<Ausgabe des Skripts unverändert>
-
-✅ **To-do**
-<die Befehle unter "Aktualisieren (als root)" unverändert und einzeln als Code-Zeile übernehmen; Mailcow nur mit ./update.sh, nie mit docker compose pull. Bei neuer Hauptversion: "Changelog lesen, vor allem bei Datenbanken". Sonst "nichts zu tun">
+Keine weiteren Werkzeuge, keine Websuche, kein Terminal. Liefert der Aufruf einen Fehler, nur die Fehlermeldung ausgeben.

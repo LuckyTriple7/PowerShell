@@ -48,7 +48,9 @@ mcp = MCPServer(
         "apt_updates lists pending Debian package updates; image_updates "
         "compares running Docker images with their registries; crowdsec_status "
         "shows CrowdSec bans, alerts and bouncer health; maintenance_status "
-        "shows backups, TLS certificates and Docker disk usage. Nothing can be "
+        "shows backups, TLS certificates and Docker disk usage; report returns "
+        "a finished German report (check/ressourcen/updates/sicherheit) that is "
+        "passed to the user unchanged. Nothing can be "
         "changed through this server: when updates, restarts or reboots are "
         "needed, tell the user which commands to run as root."
     ),
@@ -1014,6 +1016,342 @@ async def health_check() -> str:
     lines.append("OK:")
     lines.extend(f"  [ok] {o}" for o in ok)
     return "\n".join(lines)
+
+
+# ---------- Fertige Berichte (report) ----------
+# Das Modell soll nur noch weiterreichen: Ampel, Details und To-do baut der Server. Schwache
+# Modelle (Qwen in Hermes) ließen sonst Befehle weg oder ignorierten das Format.
+
+LITELLM_URL = os.environ.get("LITELLM_URL", "http://litellm:4000").rstrip("/")
+LITELLM_RELEASES = "https://api.github.com/repos/BerriAI/litellm/releases?per_page=50"
+LITELLM_STABLE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+_litellm = {"time": 0.0, "data": None}
+
+GREEN, YELLOW, RED = "🟢", "🟡", "🔴"
+LEVEL_ORDER = {GREEN: 0, YELLOW: 1, RED: 2}
+
+try:
+    from zoneinfo import ZoneInfo
+    _TZ = ZoneInfo("Europe/Berlin")
+except Exception:  # ohne tzdata im Image
+    _TZ = datetime.timezone.utc
+
+
+class Area:
+    def __init__(self, title: str):
+        self.title = title
+        self.level = GREEN
+        self.summary = ""
+        self.details: list[str] = []
+        self.warnings: list[str] = []
+        self.todos: list[str] = []
+
+    def raise_to(self, level: str) -> None:
+        if LEVEL_ORDER[level] > LEVEL_ORDER[self.level]:
+            self.level = level
+
+    def warn(self, text: str, level: str = RED) -> None:
+        self.warnings.append(text)
+        self.raise_to(level)
+
+
+async def litellm_version() -> dict:
+    """{"current": "v1.103.2", "latest": {...}, "newer": [...]} oder {"error": ...}; 1 h zwischengespeichert."""
+    if _litellm["data"] and time.time() - _litellm["time"] < 3600:
+        return _litellm["data"]
+    try:
+        async with _registry.stream("GET", f"{LITELLM_URL}/openapi.json") as r:
+            head = b""
+            async for chunk in r.aiter_bytes():
+                head += chunk
+                if len(head) > 256 * 1024:
+                    break
+        m = re.search(rb'"info"\s*:\s*\{.*?"version"\s*:\s*"([^"]+)"', head, re.S)
+        if not m:
+            raise ValueError("Version nicht in openapi.json")
+        current = "v" + m.group(1).decode().lstrip("v")
+        r = await _registry.get(LITELLM_RELEASES, headers={"Accept": "application/json"})
+        r.raise_for_status()
+        key = lambda t: tuple(int(x) for x in LITELLM_STABLE.match(t).groups())
+        rel = sorted((x for x in r.json() if not x.get("prerelease") and not x.get("draft")
+                      and LITELLM_STABLE.match(x.get("tag_name", ""))), key=lambda x: key(x["tag_name"]), reverse=True)
+        cur = key(current) if LITELLM_STABLE.match(current) else (0,)
+        data = {"current": current, "latest": rel[0] if rel else None,
+                "newer": [x["tag_name"] for x in rel if key(x["tag_name"]) > cur]}
+    except Exception as e:
+        return {"error": str(e) or e.__class__.__name__}
+    _litellm.update(time=time.time(), data=data)
+    return data
+
+
+def area_system(m: dict, status: Optional[dict]) -> Area:
+    a = Area("System")
+    mem, swap = m["mem"], m["swap"]
+    ram = pct(mem.total - mem.available, mem.total)
+    l1, l5, l15 = m["load"]
+    disks = (status or {}).get("disks") or []
+    top_disk = max((pct(d["used"], d["size"]) for d in disks), default=0)
+    a.summary = (f"CPU {m['cpu']:.0f} %, RAM {ram:.0f} %, Swap {swap.percent:.0f} %, "
+                 f"Platten max. {top_disk:.0f} %")
+    a.details = [
+        f"CPU: {m['cpu']:.0f} %, Load {l1:.2f} / {l5:.2f} / {l15:.2f} bei {m['cores']} Kernen",
+        f"RAM: {fmt_bytes(mem.total - mem.available)} / {fmt_bytes(mem.total)} ({ram:.0f} %), "
+        f"Swap {fmt_bytes(swap.used)} / {fmt_bytes(swap.total)}",
+        "Platten: " + ", ".join(f"{d['mount']} {pct(d['used'], d['size']):.0f} % (frei {fmt_bytes(d['avail'])})"
+                                for d in disks),
+    ]
+    if l1 > m["cores"]:
+        a.warn(f"Last {l1:.2f} über {m['cores']} Kernen", YELLOW)
+    if ram > WARN_RAM:
+        a.warn(f"RAM {ram:.0f} % belegt")
+    if swap.total and swap.percent > WARN_SWAP:
+        a.warn(f"Swap {swap.percent:.0f} % belegt", YELLOW)
+    for d in disks:
+        if pct(d["used"], d["size"]) > WARN_DISK:
+            a.warn(f"Platte {d['mount']} zu {pct(d['used'], d['size']):.0f} % voll")
+    needed, why = reboot_info(status) if status else (False, "")
+    a.details.append(f"Läuft seit {fmt_age(m['uptime'])}, Neustart nötig: " + (f"ja – {why}" if needed else "nein"))
+    a.summary += ", Neustart nötig" if needed else ""
+    if needed:
+        a.warn(f"Neustart nötig: {why}", YELLOW)
+        a.todos.append("Neustart einplanen: `systemctl reboot`")
+    return a
+
+
+def area_services(status: Optional[dict], states: list) -> Area:
+    a = Area("Dienste")
+    units = (status or {}).get("failed_units") or []
+    problems = container_problems(states)
+    running = sum(1 for s in states if s["state"] == "running")
+    for u in units:
+        a.warn(f"systemd-Dienst {u['unit']} fehlgeschlagen")
+        a.todos.append(f"Log ansehen: `journalctl -u {u['unit']} -n 50`")
+    for p in problems:
+        a.warn(f"Container {p}")
+    a.summary = (f"{running} von {len(states)} Containern laufen"
+                 + (f", {len(problems)} mit Problemen" if problems else "")
+                 + (f", {len(units)} systemd-Dienste fehlgeschlagen" if units else ", systemd ok"))
+    errors = (status or {}).get("journal_errors") or []
+    if errors:
+        a.details.append("Häufigste Journal-Fehler (24 h): "
+                         + ", ".join(f"{e['source']} {e['count']}×" for e in errors[:5]))
+    return a
+
+
+def area_images(with_versions: bool, done: bool) -> Area:
+    a = Area("Docker-Images")
+    res = _images["results"]
+    if not done or res is None:
+        a.summary = "Prüfung läuft noch, in einer Minute erneut abfragen"
+        a.raise_to(YELLOW)
+        return a
+    upd = [r for r in res if r["status"] == "update"]
+    stale = [r for r in res if r["stale"]]
+    current = sum(1 for r in res if r["status"] == "current")
+    local = sum(1 for r in res if r["status"] == "local")
+    for r in upd:
+        a.warn(f"Neues Image: {r['ref']} → {', '.join(r['containers'])}", YELLOW)
+    for r in stale:
+        a.warn(f"Image gepullt, Container noch alt: {r['ref']} → {', '.join(r['stale'])}", YELLOW)
+    if with_versions:
+        for r in res:
+            if r.get("newer"):
+                a.warn(f"Neuere Version: {r['ref']} → {r['newer']} (Tag in compose.yml ändern)", YELLOW)
+            if r.get("major"):
+                a.warn(f"Neue Hauptversion: {r['ref']} → {r['major']} (Changelog lesen, v. a. bei Datenbanken)", YELLOW)
+    for c in update_commands(res):
+        cmd, _, hint = c.partition("   (")
+        a.todos.append(f"`{cmd}`" + (f" – {hint.rstrip(')').replace('./update.sh', '`./update.sh`')}" if hint else ""))
+    n = len(upd) + len(stale)
+    a.summary = (f"{n} mit Update, " if n else "") + f"{current} aktuell, {local} lokal gebaut" \
+        + f" (Stand vor {fmt_age(time.time() - _images['time'])})"
+    for r in res:
+        if r["status"] == "error":
+            a.details.append(f"Nicht prüfbar: {r['ref']} ({r.get('note', '')})")
+    return a
+
+
+def area_apt(status: Optional[dict]) -> Area:
+    a = Area("Debian")
+    if not status:
+        a.summary = "keine Host-Daten"
+        a.raise_to(YELLOW)
+        return a
+    pkgs = (status.get("apt") or {}).get("updates") or []
+    sec = [p for p in pkgs if p.get("security")]
+    a.summary = f"{len(pkgs)} Updates, davon {len(sec)} Sicherheitsupdates"
+    for p in sec:
+        a.warn(f"Sicherheitsupdate {p['name']}: {p['old']} → {p['new']}")
+    if pkgs and not sec:
+        a.raise_to(YELLOW)
+    if pkgs:
+        a.todos.append("`apt update && apt full-upgrade`")
+    return a
+
+
+def area_litellm(info: dict) -> Area:
+    a = Area("LiteLLM")
+    if info.get("error"):
+        a.summary = f"Prüfung fehlgeschlagen: {info['error']}"
+        a.raise_to(YELLOW)
+        return a
+    latest = info["latest"]
+    if not info["newer"]:
+        a.summary = f"aktuell {info['current']}"
+        return a
+    a.summary = f"{info['current']} läuft, neu: {latest['tag_name']}"
+    a.warn(f"LiteLLM {latest['tag_name']} verfügbar (läuft {info['current']}), "
+           f"Notes: https://github.com/BerriAI/litellm/releases/tag/{latest['tag_name']}", YELLOW)
+    a.todos.append("`update-litellm -n`, dann `update-litellm`")
+    return a
+
+
+def area_crowdsec(status: Optional[dict], limit: int) -> Area:
+    a = Area("CrowdSec")
+    cs = (status or {}).get("crowdsec")
+    if not cs or cs.get("error"):
+        a.summary = (cs or {}).get("error", "keine Daten")
+        a.raise_to(YELLOW)
+        return a
+    warn, info = crowdsec_checks(status)
+    for w in warn:
+        a.warn(w)
+    al = cs.get("alerts_24h") or {}
+    lists = {"CAPI": "Community", "lists": "Zusatzlisten"}
+    bl = ", ".join(f"{lists.get(o, o)} {n}" for o, n in (cs.get("decisions_by_origin") or {}).items()
+                   if o not in ("crowdsec", "cscli"))
+    a.summary = (f"{cs.get('decisions_total', 0)} lokale Sperren, {al.get('count', 0)} Alerts in 24 h, "
+                 + ("Bouncer ok" if not warn else "Problem mit Bouncer/Maschine"))
+    if bl:
+        a.details.append(f"Blocklisten: {bl}")
+    if al.get("scenarios"):
+        a.details.append("Szenarien: " + ", ".join(f"{k.split('/')[-1]} {v}×" for k, v in list(al["scenarios"].items())[:5]))
+    if al.get("countries"):
+        a.details.append("Länder: " + ", ".join(f"{k} {v}" for k, v in list(al["countries"].items())[:5]))
+    for d in (cs.get("decisions") or [])[:limit]:
+        who = " ".join(x for x in (d.get("cn"), d.get("as")) if x)
+        a.details.append(f"  {d['ip']} ({who or '?'}) – {d['scenario'].split('/')[-1]}, noch {d['duration']}")
+    hub = cs.get("hub") or {}
+    if hub.get("issues"):
+        a.details.append(f"Hub: {len(hub['issues'])} Einträge mit Update/verändert")
+        a.todos.append("`docker exec crowdsec cscli hub upgrade`")
+    a.details.extend(info)
+    return a
+
+
+def area_from_maintenance(status: Optional[dict], key: str, title: str) -> Area:
+    a = Area(title)
+    if not status:
+        a.summary = "keine Host-Daten"
+        a.raise_to(YELLOW)
+        return a
+    warn, ok = maintenance_checks(status)[key]
+    level = YELLOW if key == "docker" else RED
+    for w in warn:
+        a.warn(w, level)
+    a.details = [d.strip() for d in ok[1:]]
+    if key == "certs":
+        valid = [c for c in status.get("certificates") or []
+                 if isinstance(c, dict) and not c.get("error") and c.get("served") is not False]
+        if valid:
+            soonest = min(c["not_after"] for c in valid) - time.time()
+            a.summary = f"{len(valid)} gültig, kürzeste Restlaufzeit {fmt_until(soonest)}"
+        # Nur die fünf mit der kürzesten Restlaufzeit, der Rest ist bei Short-Lived-Zertifikaten Rauschen
+        def left_days(line: str) -> float:
+            m = re.search(r"noch ([\d.]+) (Tage|h)", line)
+            return float(m.group(1)) / (1 if m.group(2) == "Tage" else 24) if m else 0.0
+
+        lines = sorted((d for d in a.details if "]: noch " in d), key=left_days)
+        rest = [d for d in a.details if "]: noch " not in d]
+        a.details = lines[:5] + ([f"… und {len(lines) - 5} weitere mit längerer Laufzeit"] if len(lines) > 5 else []) + rest
+    elif key == "backups":
+        n = len(a.details)
+        a.summary = f"{n} Backups, " + (f"{len(warn)} mit Problem" if warn else "alle erfolgreich")
+        if not warn:
+            ages = [float(re.search(r"vor ([\d.]+) h", d).group(1)) for d in a.details if re.search(r"vor [\d.]+ h", d)]
+            a.details = [f"Ältester Lauf vor {max(ages):.0f} h"] if ages else []
+        a.todos.extend(f"`{w.split('Log: ', 1)[1]}`" for w in warn if "Log: " in w)
+    elif key == "docker":
+        d = status.get("docker_disk") or {}
+        reclaim = sum((d.get(k) or {}).get("reclaimable", 0) for k in ("Images", "Build Cache"))
+        a.summary = f"{fmt_bytes(reclaim)} freigebbar (Images + Build-Cache)"
+        if warn:
+            a.todos.append("`docker builder prune -f && docker image prune -f`")
+    if not a.summary:
+        a.summary = "ok" if not warn else warn[0]
+    return a
+
+
+def render(title: str, areas: list, compact: bool, extra: Optional[list] = None) -> str:
+    now = datetime.datetime.now(_TZ).strftime("%d.%m. %H:%M")
+    out = [f"**{title} – {now}**", ""]
+    for a in areas:
+        if compact:
+            out.append(f"{a.level} **{a.title}** – {a.summary}")
+        else:
+            out.append(f"{a.level} **{a.title}** – {a.summary}")
+            out.extend(f"⚠️ {w}" for w in a.warnings)
+            out.extend(a.details)
+            out.append("")
+    if extra:
+        out.extend(extra)
+    if compact:
+        warnings = [w for a in areas for w in a.warnings]
+        out += ["", "⚠️ **Auffälligkeiten**"] + (warnings or ["keine"])
+    todos = list(dict.fromkeys(t for a in areas for t in a.todos))
+    out += ["", "✅ **To-do** (als root auf vserv01)"]
+    out += [f"{i}. {t}" for i, t in enumerate(todos, 1)] or ["nichts zu tun"]
+    return "\n".join(out).replace("\n\n\n", "\n\n").strip()
+
+
+REPORT_SECTIONS = ("check", "ressourcen", "updates", "sicherheit")
+
+
+@mcp.tool()
+async def report(section: str = "check") -> str:
+    """Finished, formatted report for the user (German, traffic lights, to-do list with root commands).
+    Pass the result through UNCHANGED. section: "check" (everything, short), "ressourcen" (CPU/RAM/disks/
+    containers/Docker disk), "updates" (Debian, Docker images incl. newer tags, LiteLLM),
+    "sicherheit" (CrowdSec, TLS certificates, backups)."""
+    if section not in REPORT_SECTIONS:
+        raise ValueError('section muss "check", "ressourcen", "updates" oder "sicherheit" sein.')
+    status, note = load_status()
+    extra = [f"Hinweis: {note}"] if note else []
+
+    if section == "sicherheit":
+        areas = [area_crowdsec(status, 8), area_from_maintenance(status, "certs", "Zertifikate"),
+                 area_from_maintenance(status, "backups", "Backups")]
+        return render("🛡️ vserv01 – Sicherheit", areas, False, extra)
+
+    if section == "updates":
+        done, info = await asyncio.gather(ensure_image_check(False, True, TOOL_WAIT), litellm_version())
+        areas = [area_apt(status), area_images(True, done), area_litellm(info)]
+        return render("🔄 vserv01 – Updates", areas, False, extra)
+
+    m, states, stats = await asyncio.gather(asyncio.to_thread(host_metrics), container_states(), all_stats())
+    if section == "ressourcen":
+        sysa = area_system(m, status)
+        groups: dict = {}
+        for s in stats:
+            g = groups.setdefault(s["stack"], [0, 0.0])
+            g[0] += s["mem"]
+            g[1] += s["cpu"]
+        stacks = ["**Größte Stacks (RAM)**"] + [
+            f"{name} – {fmt_bytes(g[0])}, CPU {g[1]:.1f} %"
+            for name, g in sorted(groups.items(), key=lambda kv: -kv[1][0])[:10]]
+        busy = [s for s in sorted(stats, key=lambda s: -s["cpu"]) if s["cpu"] >= 1][:8]
+        cpu = ["**CPU über 1 %**"] + ([f"{s['name']} – {s['cpu']:.1f} %" for s in busy] or ["alles ruhig"])
+        areas = [sysa, area_services(status, states), area_from_maintenance(status, "docker", "Docker-Speicher")]
+        return render("🖥️ vserv01 – Ressourcen", areas, False, stacks + [""] + cpu + extra)
+
+    # check: alles kurz; Images ohne Versionssuche (die dauert), LiteLLM aus dem Cache bzw. frisch
+    done, info = await asyncio.gather(ensure_image_check(False, False, HEALTH_IMAGE_WAIT), litellm_version())
+    areas = [area_system(m, status), area_services(status, states), area_apt(status),
+             area_images(False, done), area_litellm(info), area_crowdsec(status, 0),
+             area_from_maintenance(status, "certs", "Zertifikate"),
+             area_from_maintenance(status, "backups", "Backups"),
+             area_from_maintenance(status, "docker", "Docker-Speicher")]
+    return render("🩺 vserv01 – Komplett-Check", areas, True, extra)
 
 
 if __name__ == "__main__":
