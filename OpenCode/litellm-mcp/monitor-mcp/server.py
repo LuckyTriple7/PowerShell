@@ -179,6 +179,10 @@ def compose_info(c: dict) -> dict:
 DEFAULT_COMPOSE = {"compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"}
 
 
+def is_mailcow(ci: dict) -> bool:
+    return "mailcow" in ci.get("dir", "")
+
+
 def update_commands(results: list) -> list[str]:
     """Konkrete Befehle je Stack-Ordner, nur für die betroffenen Dienste."""
     stacks: dict = {}
@@ -437,6 +441,10 @@ async def check_images(with_versions: bool) -> list:
     async def check(ref: str, cs: list) -> dict:
         res = {"ref": ref, "containers": sorted(cname(c) for c in cs), "stale": [], "newer": None, "major": None,
                "compose": [compose_info(c) for c in cs]}
+        if all(is_mailcow(ci) for ci in res["compose"]):
+            # Mailcow pinnt seine Images selbst; ob es ein Update gibt, sagt die Mailcow-Version
+            res["status"] = "managed"
+            return res
         parsed = parse_ref(ref)
         tagged = await docker_get(f"/images/{ref}/json") if parsed else None
         base = tagged or await docker_get(f"/images/{cs[0]['ImageID']}/json") or {}
@@ -797,6 +805,8 @@ def format_images(results: list, checked_at: float, with_versions: bool) -> str:
     lines.append(f"Aktuell: {len(groups.get('current', []))}")
     if groups.get("local"):
         lines.append(f"Lokal gebaut oder privat (nicht prüfbar): {len(groups['local'])}")
+    if groups.get("managed"):
+        lines.append(f"Von Mailcow verwaltet (nicht einzeln geprüft, siehe Mailcow-Version): {len(groups['managed'])}")
     if groups.get("skip"):
         lines.append("Per Digest gepinnt oder ohne Namen: " + ", ".join(sorted(r["ref"] for r in groups["skip"])))
     if groups.get("error"):
@@ -1009,6 +1019,12 @@ async def health_check() -> str:
     else:
         ok.append("Image-Prüfung läuft noch – später image_updates aufrufen")
 
+    mc = area_mailcow(status, await mailcow_latest())
+    if mc.warnings:
+        warn.extend(mc.warnings)
+    else:
+        ok.append(f"Mailcow: {mc.summary}")
+
     if status and note:
         warn.append(note)
     lines = ["WARNUNGEN:" if warn else "Keine Warnungen."]
@@ -1082,6 +1098,48 @@ async def litellm_version() -> dict:
         return {"error": str(e) or e.__class__.__name__}
     _litellm.update(time=time.time(), data=data)
     return data
+
+
+MAILCOW_RELEASES = "https://api.github.com/repos/mailcow/mailcow-dockerized/releases?per_page=30"
+MAILCOW_TAG = re.compile(r"^\d{4}-\d{2}[a-z]?$")  # 2026-07, 2026-07a: als Text sortierbar
+_mailcow = {"time": 0.0, "data": None}
+
+
+async def mailcow_latest() -> dict:
+    if _mailcow["data"] and time.time() - _mailcow["time"] < 3600:
+        return _mailcow["data"]
+    try:
+        r = await _registry.get(MAILCOW_RELEASES, headers={"Accept": "application/json"})
+        r.raise_for_status()
+        tags = sorted(x["tag_name"] for x in r.json()
+                      if not x.get("prerelease") and not x.get("draft") and MAILCOW_TAG.match(x.get("tag_name", "")))
+        data = {"tags": tags}
+    except Exception as e:
+        return {"error": str(e) or e.__class__.__name__}
+    _mailcow.update(time=time.time(), data=data)
+    return data
+
+
+def area_mailcow(status: Optional[dict], latest: dict) -> Area:
+    a = Area("Mailcow")
+    installed = ((status or {}).get("mailcow") or {}).get("version")
+    if not installed:
+        a.summary = ((status or {}).get("mailcow") or {}).get("error", "Version unbekannt (Collector zu alt?)")
+        a.raise_to(YELLOW)
+        return a
+    if latest.get("error") or not latest.get("tags"):
+        a.summary = f"{installed}, Prüfung auf GitHub fehlgeschlagen: {latest.get('error', 'keine Releases')}"
+        a.raise_to(YELLOW)
+        return a
+    newer = [t for t in latest["tags"] if t > installed]
+    if not newer:
+        a.summary = f"aktuell {installed}"
+        return a
+    a.summary = f"{installed} läuft, neu: {newer[-1]}"
+    a.warn(f"Mailcow {newer[-1]} verfügbar (läuft {installed}), "
+           f"Notes: https://github.com/mailcow/mailcow-dockerized/releases/tag/{newer[-1]}", YELLOW)
+    a.todos.append("`cd /opt/mailcow-dockerized && ./update.sh`")
+    return a
 
 
 def area_system(m: dict, status: Optional[dict]) -> Area:
@@ -1163,7 +1221,9 @@ def area_images(with_versions: bool, done: bool) -> Area:
         cmd, _, hint = c.partition("   (")
         a.todos.append(f"`{cmd}`" + (f" – {hint.rstrip(')').replace('./update.sh', '`./update.sh`')}" if hint else ""))
     n = len(upd) + len(stale)
+    managed = sum(1 for r in res if r["status"] == "managed")
     a.summary = (f"{n} mit Update, " if n else "") + f"{current} aktuell, {local} lokal gebaut" \
+        + (f", {managed} von Mailcow verwaltet" if managed else "") \
         + f" (Stand vor {fmt_age(time.time() - _images['time'])})"
     for r in res:
         if r["status"] == "error":
@@ -1324,8 +1384,9 @@ async def report(section: str = "check") -> str:
         return render("🛡️ vserv01 – Sicherheit", areas, False, extra)
 
     if section == "updates":
-        done, info = await asyncio.gather(ensure_image_check(False, True, TOOL_WAIT), litellm_version())
-        areas = [area_apt(status), area_images(True, done), area_litellm(info)]
+        done, info, mc = await asyncio.gather(ensure_image_check(False, True, TOOL_WAIT), litellm_version(),
+                                              mailcow_latest())
+        areas = [area_apt(status), area_images(True, done), area_mailcow(status, mc), area_litellm(info)]
         return render("🔄 vserv01 – Updates", areas, False, extra)
 
     m, states, stats = await asyncio.gather(asyncio.to_thread(host_metrics), container_states(), all_stats())
@@ -1345,9 +1406,10 @@ async def report(section: str = "check") -> str:
         return render("🖥️ vserv01 – Ressourcen", areas, False, stacks + [""] + cpu + extra)
 
     # check: alles kurz; Images ohne Versionssuche (die dauert), LiteLLM aus dem Cache bzw. frisch
-    done, info = await asyncio.gather(ensure_image_check(False, False, HEALTH_IMAGE_WAIT), litellm_version())
+    done, info, mc = await asyncio.gather(ensure_image_check(False, False, HEALTH_IMAGE_WAIT), litellm_version(),
+                                          mailcow_latest())
     areas = [area_system(m, status), area_services(status, states), area_apt(status),
-             area_images(False, done), area_litellm(info), area_crowdsec(status, 0),
+             area_images(False, done), area_mailcow(status, mc), area_litellm(info), area_crowdsec(status, 0),
              area_from_maintenance(status, "certs", "Zertifikate"),
              area_from_maintenance(status, "backups", "Backups"),
              area_from_maintenance(status, "docker", "Docker-Speicher")]

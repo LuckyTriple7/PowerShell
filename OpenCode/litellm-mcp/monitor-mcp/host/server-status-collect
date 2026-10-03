@@ -359,6 +359,16 @@ def docker_disk():
     return out or {"error": "docker system df lieferte nichts"}
 
 
+MAILCOW_INFO = "/opt/mailcow-dockerized/data/web/inc/app_info.inc.php"
+
+
+def mailcow():
+    """Installierte Mailcow-Version (setzt update.sh), Vergleich mit GitHub macht der MCP."""
+    with open(MAILCOW_INFO, encoding="utf-8") as f:
+        m = re.search(r'\$MAILCOW_GIT_VERSION\s*=\s*"([^"]*)"', f.read())
+    return {"version": m.group(1)} if m and m.group(1) else {"error": f"keine Version in {MAILCOW_INFO}"}
+
+
 def safe(fn):
     # Ein Fehler in einem Teil darf status.json nicht verhindern, sonst fällt der ganze Monitor aus
     try:
@@ -383,6 +393,7 @@ def main():
         "backups": safe(backups),
         "certificates": safe(certificates),
         "docker_disk": safe(docker_disk),
+        "mailcow": safe(mailcow),
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     tmp = OUT + ".tmp"
