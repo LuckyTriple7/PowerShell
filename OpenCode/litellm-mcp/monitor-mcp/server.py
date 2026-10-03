@@ -1370,6 +1370,112 @@ async def area_costs() -> list:
     return [total, keys, models]
 
 
+# MCP-Freigaben: welcher Key ist Hermes, wie heißt dieser Server in LiteLLM
+HERMES_KEY_ALIAS = os.environ.get("HERMES_KEY_ALIAS", "hermes-ha")
+MONITOR_SERVER_NAME = os.environ.get("MONITOR_SERVER_NAME", "monitor_mcp")
+
+
+def _bare_tool(name: str, server_names: set) -> str:
+    # Einträge können mit Serverpräfix stehen ("monitor_mcp-report") oder ohne
+    for s in server_names:
+        for sep in ("-", "__", "/"):
+            if s and name.startswith(s + sep):
+                return name[len(s) + len(sep):]
+    return name
+
+
+def server_tool_enabled(srv: dict, tool: str) -> bool:
+    """Nachbau von LiteLLMs check_allowed_or_banned_tools (v1.103): Allowlist, sonst Denylist."""
+    names = {srv.get("server_name") or "", srv.get("alias") or ""}
+    info = srv.get("mcp_info") or {}
+    allowed = {_bare_tool(t, names) for t in srv.get("allowed_tools") or []}
+    if allowed or (isinstance(info, dict) and info.get("tool_allowlist_enforced")):
+        return tool in allowed
+    return tool not in {_bare_tool(t, names) for t in srv.get("disallowed_tools") or []}
+
+
+async def area_permissions() -> list:
+    """[Übersicht, Monitor-Tools] – nur lesend über LITELLM_VIEWER_KEY."""
+    over, mon = Area(f"MCP-Server für {HERMES_KEY_ALIAS}"), Area(f"Tools von {MONITOR_SERVER_NAME}")
+    if not LITELLM_VIEWER_KEY:
+        over.summary = "LITELLM_VIEWER_KEY fehlt in der .env des Monitor-Stacks"
+        over.raise_to(YELLOW)
+        return [over]
+    try:
+        servers, keys = await asyncio.gather(
+            litellm_get("/v1/mcp/server"),
+            litellm_get("/key/list", {"return_full_object": "true", "size": 100, "key_alias": HERMES_KEY_ALIAS}))
+    except Exception as e:
+        over.summary = f"Abfrage fehlgeschlagen: {e}"
+        over.raise_to(YELLOW)
+        return [over]
+    servers = [s for s in servers if isinstance(s, dict)] if isinstance(servers, list) else []
+    key = next((k for k in keys.get("keys") or [] if isinstance(k, dict)
+                and k.get("key_alias") == HERMES_KEY_ALIAS), None)
+    if key is None:
+        over.summary = f"Key {HERMES_KEY_ALIAS} nicht gefunden"
+        over.raise_to(RED)
+        return [over]
+
+    def ident(s: dict) -> set:
+        return {x for x in (s.get("server_id"), s.get("server_name"), s.get("alias")) if x}
+
+    perm = key.get("object_permission") or {}
+    key_servers = set(perm.get("mcp_servers") or [])
+    tool_perms = perm.get("mcp_tool_permissions") or {}
+    team_note = ""
+    if not key_servers:
+        # Leere Liste am Key = Freigaben des Teams gelten
+        team_id = key.get("team_id")
+        try:
+            team = await litellm_get("/team/info", {"team_id": team_id}) if team_id else {}
+            tperm = ((team.get("team_info") or team).get("object_permission") or {})
+            key_servers = set(tperm.get("mcp_servers") or [])
+            tool_perms = tool_perms or tperm.get("mcp_tool_permissions") or {}
+            team_note = f" (über Team {(team.get('team_info') or team).get('team_alias') or team_id})"
+        except Exception as e:
+            team_note = f" (Team nicht lesbar: {e})"
+
+    def key_has(s: dict) -> bool:
+        return bool(ident(s) & key_servers) or bool(s.get("allow_all_keys"))
+
+    def key_tool_ok(s: dict, tool: str) -> bool:
+        limits = next((v for k, v in tool_perms.items() if k in ident(s)), None)
+        return not limits or tool in {_bare_tool(t, ident(s)) for t in limits}
+
+    yes = sorted((s.get("server_name") or s.get("alias") or "?") for s in servers if key_has(s))
+    no = sorted((s.get("server_name") or s.get("alias") or "?") for s in servers if not key_has(s))
+    over.summary = f"{len(yes)} von {len(servers)} Servern freigegeben{team_note}"
+    over.details = [f"Freigegeben: {', '.join(yes) or '–'}", f"Nicht freigegeben: {', '.join(no) or '–'}"]
+    for s in servers:
+        if key_has(s) and (limits := next((v for k, v in tool_perms.items() if k in ident(s)), None)):
+            over.details.append(f"{s.get('server_name')}: Key schränkt auf {len(limits)} Tools ein")
+
+    # Eigene Tools mit LiteLLM abgleichen – nur hier kennt der MCP die vollständige Liste
+    me = next((s for s in servers if MONITOR_SERVER_NAME in ident(s)), None)
+    own = sorted(t.name for t in await mcp.list_tools())
+    if me is None:
+        mon.warn(f"Server {MONITOR_SERVER_NAME} nicht in LiteLLM gefunden")
+        return [over, mon]
+    off = [t for t in own if not server_tool_enabled(me, t)]
+    blocked = [t for t in own if t not in off and not key_tool_ok(me, t)]
+    if not key_has(me):
+        mon.warn(f"{MONITOR_SERVER_NAME} ist für {HERMES_KEY_ALIAS} nicht freigegeben")
+        mon.todos.append(f"LiteLLM-UI: Key {HERMES_KEY_ALIAS} → MCP-Server {MONITOR_SERVER_NAME} freigeben")
+    for t in off:
+        mon.warn(f"Tool {t} ist am Server ausgeschaltet")
+    for t in blocked:
+        mon.warn(f"Tool {t} ist beim Key {HERMES_KEY_ALIAS} nicht freigegeben")
+    if off:
+        mon.todos.append(f"LiteLLM-UI: MCP Servers → {MONITOR_SERVER_NAME} → Tools einschalten: {', '.join(off)}")
+    if blocked:
+        mon.todos.append(f"LiteLLM-UI: Key {HERMES_KEY_ALIAS} → Tools freigeben: {', '.join(blocked)}")
+    if off or blocked or not key_has(me):
+        mon.todos.append("Danach in Telegram `/reload_mcp` und `/new`")
+    mon.summary = f"{len(own) - len(off) - len(blocked)} von {len(own)} Tools nutzbar"
+    return [over, mon]
+
+
 def area_system(m: dict, status: Optional[dict]) -> Area:
     a = Area("System")
     mem, swap = m["mem"], m["swap"]
@@ -1570,7 +1676,8 @@ def area_from_maintenance(status: Optional[dict], key: str, title: str) -> Area:
     return a
 
 
-def render(title: str, areas: list, compact: bool, extra: Optional[list] = None, todo: bool = True) -> str:
+def render(title: str, areas: list, compact: bool, extra: Optional[list] = None, todo: bool = True,
+           todo_title: str = "✅ **To-do** (als root auf vserv01)") -> str:
     now = datetime.datetime.now(_TZ).strftime("%d.%m. %H:%M")
     out = [f"**{title} – {now}**", ""]
     for a in areas:
@@ -1588,12 +1695,12 @@ def render(title: str, areas: list, compact: bool, extra: Optional[list] = None,
         out += ["", "⚠️ **Auffälligkeiten**"] + (warnings or ["keine"])
     todos = list(dict.fromkeys(t for a in areas for t in a.todos))
     if todo:
-        out += ["", "✅ **To-do** (als root auf vserv01)"]
+        out += ["", todo_title]
         out += [f"{i}. {t}" for i, t in enumerate(todos, 1)] or ["nichts zu tun"]
     return "\n".join(out).replace("\n\n\n", "\n\n").strip()
 
 
-REPORT_SECTIONS = ("check", "ressourcen", "updates", "sicherheit", "kosten")
+REPORT_SECTIONS = ("check", "ressourcen", "updates", "sicherheit", "kosten", "freigaben")
 
 
 @mcp.tool()
@@ -1602,11 +1709,13 @@ async def report(section: str = "check") -> str:
     Pass the result through UNCHANGED. section: "check" (everything, short), "ressourcen" (CPU/RAM/disks/
     containers/Docker disk), "updates" (Debian, Docker images incl. newer tags, LiteLLM),
     "sicherheit" (CrowdSec, TLS certificates, backups), "kosten" (LiteLLM spend today/month,
-    per key with budgets, top models)."""
+    per key with budgets, top models), "freigaben" (which MCP servers/tools the Hermes key may use)."""
     if section not in REPORT_SECTIONS:
-        raise ValueError('section muss "check", "ressourcen", "updates", "sicherheit" oder "kosten" sein.')
+        raise ValueError('section muss "check", "ressourcen", "updates", "sicherheit", "kosten" oder "freigaben" sein.')
     if section == "kosten":
         return render("💰 LiteLLM – Kosten", await area_costs(), False, todo=False)
+    if section == "freigaben":
+        return render("🔑 MCP-Freigaben", await area_permissions(), False, todo_title="✅ **To-do**")
     status, note = load_status()
     extra = [f"Hinweis: {note}"] if note else []
 

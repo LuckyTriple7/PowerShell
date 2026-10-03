@@ -39,12 +39,6 @@ Stack: `vserv01:/opt/docker/stacks/litellm-caveman` (compose.yml + compose.video
 - Fertige Skill-Sammlung „LiteLLM Skills“ (https://docs.litellm.ai/docs/tutorials/claude_code_skills): Agent verwaltet den Proxy per `curl` (Keys, Teams, Modelle, MCP-Server, Nutzung).
 - Achtung: braucht den Admin-Key → nur mit Bestätigung jedes Befehls nutzen; ggf. eigenen Key mit eingeschränkten Rechten prüfen.
 
-### Hermes-Skill: MCP-Freigaben anzeigen (nur lesend)
-- Ziel: in Telegram sehen, ob ein MCP-Tool wirklich bei Hermes ankommt, statt bei jeder Freigabe zu rätseln (Server-Tool aus? Key `hermes-ha` fehlt?). Anlass 03.10.2026: `maintenance_status` und `report` fehlten zweimal.
-- Anzeige je MCP-Server: Tools am Server ein/aus, beim Key `hermes-ha` freigegeben ja/nein, und was Hermes tatsächlich sieht (wie `hermes mcp test`).
-- Umsetzung als **no-agent-Skript** oder als Tool im monitor_mcp. Es braucht einen Key, der die Freigaben LESEN, aber nichts ändern darf. Vorher prüfen, ob LiteLLM so einen Key überhaupt zulässt. Der Master-Key kommt nicht in Hermes.
-- Nicht verwechseln mit den „Skills“ in LiteLLM (Anthropic-Skills-API über den `container`-Parameter). Die nutzt Hermes nicht, daher bewusst nicht weiterverfolgt (03.10.2026).
-
 ### Eigener Medien-Skill
 - Skill (`SKILL.md`) für den Ablauf Bild → Bearbeiten → Video → Ton mit den bevorzugten Anbietern und Kostenhinweisen.
 - Vorher prüfen, ob eine Anweisung in der OpenCode-Konfiguration nicht schon reicht.
@@ -88,6 +82,8 @@ Stack: `vserv01:/opt/docker/stacks/litellm-caveman` (compose.yml + compose.video
 - `litellm-mcp/README.md` um `github_mcp` und `playwright_mcp` ergänzen (seit 01.10.2026 eingebunden).
 
 ## Erledigt
+
+- **03.10.2026 – Hermes-Skill `/mcp_freigaben`** (nur lesend): `report(section="freigaben")` im monitor_mcp über den Nur-Lese-Key `LITELLM_VIEWER_KEY` (proxy_admin_viewer). Zeigt, welche MCP-Server der Key `hermes-ha` (oder sein Team) nutzen darf, und gleicht die eigenen Tools des Monitors mit der Allowlist am Server und den Tool-Rechten am Key ab. Fremde Server: nur freigegeben ja/nein, deren vollständige Tool-Liste sieht der Nur-Lese-Key nicht.
 - Obsidian-MCP Hybrid-Suche (02.10.2026): SQLite-FTS5 + Embeddings `text-embedding-3-small` über LiteLLM (Key `obsidian-mcp-service`, Service Account, Team `mcp-services`), Reciprocal Rank Fusion, Abgleich per ETag. `Arbeit/`, `Privat/`, `Finanzen/` und `privat: true` gehen nicht an OpenAI. QMD (Hermes-Setup eines Kollegen) bewusst nicht genommen: lokale Modelle ~1 GB, gleiches RAM-Problem wie Ollama. Details: `litellm-mcp/README.md`.
 - Obsidian-Vault Ordnerstruktur (02.10.2026): `Projekte/`, `KI/`, `Wissen/`, `Haus/`, `Einkauf/`, `Reisen/`, `Inbox/`, `Arbeit/`, `Privat/`, `Finanzen/`, `Archiv/` (je mit `README.md`).
 - Healthchecks Stufe 1+2 (28.09.2026): litellm, alle MCPs, image-mcp-files, opencode-server, media-browser, Postgres/Valkey von Linkwarden, Open Archiver, Paperless (+ depends_on service_healthy)
