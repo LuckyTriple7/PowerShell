@@ -1285,6 +1285,91 @@ def area_mailq(status: Optional[dict]) -> Area:
     return a
 
 
+# Kosten: Nur-Lese-Key (Rolle proxy_admin_viewer) aus der .env des Stacks
+LITELLM_VIEWER_KEY = os.environ.get("LITELLM_VIEWER_KEY", "")
+BUDGET_WARN = 0.8
+
+
+def fmt_usd(v: float) -> str:
+    return f"{v:.4f} $" if 0 < abs(v) < 0.01 else f"{v:.2f} $"
+
+
+async def litellm_get(path: str, params: Optional[dict] = None):
+    r = await _registry.get(f"{LITELLM_URL}{path}", params=params,
+                            headers={"Authorization": f"Bearer {LITELLM_VIEWER_KEY}"}, timeout=30)
+    if r.status_code in (401, 403):
+        raise ValueError(f"LiteLLM lehnt den Nur-Lese-Key ab (HTTP {r.status_code})")
+    r.raise_for_status()
+    return r.json()
+
+
+async def area_costs() -> list:
+    """[Kosten gesamt, je Key, je Modell] für den laufenden Monat (Ortszeit)."""
+    total, keys, models = Area("Kosten"), Area("Je Key (Monat)"), Area("Top-Modelle (Monat)")
+    if not LITELLM_VIEWER_KEY:
+        total.summary = "LITELLM_VIEWER_KEY fehlt in der .env des Monitor-Stacks"
+        total.raise_to(YELLOW)
+        return [total]
+    now = datetime.datetime.now(_TZ)
+    today, first = now.date(), now.date().replace(day=1)
+    yesterday = today - datetime.timedelta(days=1)
+    offset = -int(now.utcoffset().total_seconds() // 60) if now.utcoffset() else 0  # JS-Konvention
+    try:
+        data, key_list = await asyncio.gather(
+            litellm_get("/user/daily/activity/aggregated", {
+                "start_date": min(first, yesterday).isoformat(), "end_date": today.isoformat(),
+                "timezone": offset, "include_current_utc_day": "true"}),
+            litellm_get("/key/list", {"return_full_object": "true", "size": 100}))
+    except Exception as e:
+        total.summary = f"Abfrage fehlgeschlagen: {e}"
+        total.raise_to(YELLOW)
+        return [total]
+
+    day_spend: dict = {}
+    per_key: dict = {}
+    per_model: dict = {}
+    for day in data.get("results") or []:
+        d = str(day.get("date", ""))[:10]
+        spend = (day.get("metrics") or {}).get("spend", 0.0)
+        day_spend[d] = day_spend.get(d, 0.0) + spend
+        if d < first.isoformat():
+            continue  # Vormonat nur für "gestern" am Monatsersten
+        bd = day.get("breakdown") or {}
+        for h, k in (bd.get("api_keys") or {}).items():
+            alias = (k.get("metadata") or {}).get("key_alias") or h[:10]
+            per_key[alias] = per_key.get(alias, 0.0) + (k.get("metrics") or {}).get("spend", 0.0)
+        for name, mm in (bd.get("models") or {}).items():
+            per_model[name] = per_model.get(name, 0.0) + (mm.get("metrics") or {}).get("spend", 0.0)
+    month = sum(v for d, v in day_spend.items() if d >= first.isoformat())
+    total.summary = (f"heute {fmt_usd(day_spend.get(today.isoformat(), 0.0))}, "
+                     f"gestern {fmt_usd(day_spend.get(yesterday.isoformat(), 0.0))}, "
+                     f"{now.strftime('%m/%Y')} {fmt_usd(month)}")
+
+    # Budgets aus der Key-Liste (spend dort ist der Budgetzähler seit dem letzten Reset)
+    budgets = {}
+    for k in key_list.get("keys") or []:
+        if isinstance(k, dict) and k.get("max_budget"):
+            alias = k.get("key_alias") or str(k.get("token", ""))[:10]
+            budgets[alias] = (k.get("spend") or 0.0, k["max_budget"], k.get("budget_duration") or "")
+            used, limit = budgets[alias][0], budgets[alias][1]
+            if used >= limit:
+                keys.warn(f"Key {alias}: Budget aufgebraucht ({fmt_usd(used)} von {fmt_usd(limit)})")
+            elif used >= limit * BUDGET_WARN:
+                keys.warn(f"Key {alias}: {used / limit:.0%} des Budgets verbraucht "
+                          f"({fmt_usd(used)} von {fmt_usd(limit)})", YELLOW)
+    ranked = sorted(per_key.items(), key=lambda kv: -kv[1])
+    keys.summary = f"{len(ranked)} Keys mit Kosten"
+    for alias, v in ranked[:12]:
+        b = budgets.get(alias)
+        keys.details.append(f"{alias} – {fmt_usd(v)}"
+                            + (f" (Budget {fmt_usd(b[0])} / {fmt_usd(b[1])}"
+                               + (f" je {b[2]}" if b[2] else "") + ")" if b else ""))
+    top = sorted(per_model.items(), key=lambda kv: -kv[1])[:8]
+    models.summary = f"{len(per_model)} Modelle genutzt"
+    models.details = [f"{n} – {fmt_usd(v)}" for n, v in top if v > 0]
+    return [total, keys, models]
+
+
 def area_system(m: dict, status: Optional[dict]) -> Area:
     a = Area("System")
     mem, swap = m["mem"], m["swap"]
@@ -1485,7 +1570,7 @@ def area_from_maintenance(status: Optional[dict], key: str, title: str) -> Area:
     return a
 
 
-def render(title: str, areas: list, compact: bool, extra: Optional[list] = None) -> str:
+def render(title: str, areas: list, compact: bool, extra: Optional[list] = None, todo: bool = True) -> str:
     now = datetime.datetime.now(_TZ).strftime("%d.%m. %H:%M")
     out = [f"**{title} – {now}**", ""]
     for a in areas:
@@ -1502,12 +1587,13 @@ def render(title: str, areas: list, compact: bool, extra: Optional[list] = None)
         warnings = [w for a in areas for w in a.warnings]
         out += ["", "⚠️ **Auffälligkeiten**"] + (warnings or ["keine"])
     todos = list(dict.fromkeys(t for a in areas for t in a.todos))
-    out += ["", "✅ **To-do** (als root auf vserv01)"]
-    out += [f"{i}. {t}" for i, t in enumerate(todos, 1)] or ["nichts zu tun"]
+    if todo:
+        out += ["", "✅ **To-do** (als root auf vserv01)"]
+        out += [f"{i}. {t}" for i, t in enumerate(todos, 1)] or ["nichts zu tun"]
     return "\n".join(out).replace("\n\n\n", "\n\n").strip()
 
 
-REPORT_SECTIONS = ("check", "ressourcen", "updates", "sicherheit")
+REPORT_SECTIONS = ("check", "ressourcen", "updates", "sicherheit", "kosten")
 
 
 @mcp.tool()
@@ -1515,9 +1601,12 @@ async def report(section: str = "check") -> str:
     """Finished, formatted report for the user (German, traffic lights, to-do list with root commands).
     Pass the result through UNCHANGED. section: "check" (everything, short), "ressourcen" (CPU/RAM/disks/
     containers/Docker disk), "updates" (Debian, Docker images incl. newer tags, LiteLLM),
-    "sicherheit" (CrowdSec, TLS certificates, backups)."""
+    "sicherheit" (CrowdSec, TLS certificates, backups), "kosten" (LiteLLM spend today/month,
+    per key with budgets, top models)."""
     if section not in REPORT_SECTIONS:
-        raise ValueError('section muss "check", "ressourcen", "updates" oder "sicherheit" sein.')
+        raise ValueError('section muss "check", "ressourcen", "updates", "sicherheit" oder "kosten" sein.')
+    if section == "kosten":
+        return render("💰 LiteLLM – Kosten", await area_costs(), False, todo=False)
     status, note = load_status()
     extra = [f"Hinweis: {note}"] if note else []
 
