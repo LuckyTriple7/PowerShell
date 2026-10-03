@@ -359,7 +359,79 @@ def docker_disk():
     return out or {"error": "docker system df lieferte nichts"}
 
 
-MAILCOW_INFO = "/opt/mailcow-dockerized/data/web/inc/app_info.inc.php"
+# Backrest (restic): Protokoll der Läufe aus oplog.sqlite. Die API bräuchte Login; die DB ist
+# lesbar, aber Backrest schreibt laufend hinein, deshalb wird eine Kopie ausgewertet.
+BACKREST_OPLOG = "/opt/docker/stacks/backrest/data/oplog.sqlite"
+# Feldnummern/Status aus backrest proto/v1/operations.proto
+BACKREST_KINDS = {100: "backup", 102: "forget", 103: "prune", 107: "check"}
+BACKREST_STATUS = {3: "success", 7: "warning", 4: "error", 5: "cancelled", 6: "cancelled"}
+BACKREST_MAX_AGE = {"backup": 26 * 3600, "check": 35 * 86400, "prune": 35 * 86400}
+
+
+def _pb_fields(b):
+    """Oberste Ebene einer Protobuf-Nachricht: {Feldnummer: Wert}. Reicht für die paar Felder hier."""
+    out, i = {}, 0
+
+    def varint():
+        nonlocal i
+        r = s = 0
+        while True:
+            x = b[i]
+            i += 1
+            r |= (x & 0x7F) << s
+            s += 7
+            if not x & 0x80:
+                return r
+
+    while i < len(b):
+        key = varint()
+        num, wt = key >> 3, key & 7
+        if wt == 0:
+            out[num] = varint()
+        elif wt == 2:
+            n = varint()
+            out[num] = b[i:i + n]
+            i += n
+        elif wt in (1, 5):
+            i += 8 if wt == 1 else 4
+        else:
+            break
+    return out
+
+
+def backrest():
+    import shutil
+    import sqlite3
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(BACKREST_OPLOG + suffix):
+                shutil.copy2(BACKREST_OPLOG + suffix, os.path.join(tmp, "oplog.sqlite" + suffix))
+        db = sqlite3.connect(os.path.join(tmp, "oplog.sqlite"))
+        rows = db.execute("SELECT g.plan_id, g.repo_id, o.status, o.start_time_ms, o.operation "
+                          "FROM operations o JOIN operation_groups g ON g.ogid = o.ogid "
+                          "ORDER BY o.start_time_ms").fetchall()
+        db.close()
+    last = {}
+    for plan, repo, status, start_ms, blob in rows:
+        f = _pb_fields(blob)
+        kind = next((BACKREST_KINDS[k] for k in f if k in BACKREST_KINDS), None)
+        if kind not in BACKREST_MAX_AGE:
+            continue
+        name = f"Backrest {plan} → {repo}" if kind == "backup" else f"Backrest {kind} {repo}"
+        e = last.setdefault(name, {"timer": name, "unit": "", "timer_active": True, "running": False,
+                                   "result": "", "exit": "", "last": 0, "max_age": BACKREST_MAX_AGE[kind]})
+        if status == 2:
+            e["running"] = True
+        if status in BACKREST_STATUS:  # fertig (geplant/laufend zählen nicht)
+            e["result"] = BACKREST_STATUS[status]
+            e["last"] = (f.get(6) or start_ms) / 1000
+            msg = f.get(7, b"")
+            e["exit"] = msg.decode("utf-8", "replace")[:200] if isinstance(msg, bytes) else ""
+    return sorted(last.values(), key=lambda e: e["timer"])
+
+
+MAILCOW_INFO ="/opt/mailcow-dockerized/data/web/inc/app_info.inc.php"
 
 
 def mailcow():
@@ -394,6 +466,7 @@ def main():
         "certificates": safe(certificates),
         "docker_disk": safe(docker_disk),
         "mailcow": safe(mailcow),
+        "backrest": safe(backrest),
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     tmp = OUT + ".tmp"

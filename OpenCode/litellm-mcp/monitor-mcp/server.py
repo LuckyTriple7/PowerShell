@@ -559,8 +559,15 @@ def backup_lines(status: dict) -> tuple[list[str], list[str]]:
     now = status.get("time", time.time())
     uptime = time.time() - psutil.boot_time()
     warn, lines = [], []
-    for b in data:
+    # Backrest-Einträge haben dasselbe Format, aber eigene Altersgrenze und kein systemd-Log
+    backrest = status.get("backrest")
+    if isinstance(backrest, dict):
+        warn.append(f"Backrest: {backrest.get('error', '?')}")
+    elif backrest is None:
+        warn.append("Backrest: keine Daten (server-status-collect zu alt)")
+    for b in data + (backrest if isinstance(backrest, list) else []):
         name = b["timer"].removesuffix(".timer")
+        max_age = b.get("max_age", BACKUP_MAX_AGE)
         age = now - b["last"] if b["last"] else None
         when = f"vor {fmt_age(age)}" if age is not None else "seit Neustart nicht gelaufen"
         state = "läuft gerade" if b["running"] else (b["result"] or "?")
@@ -568,11 +575,14 @@ def backup_lines(status: dict) -> tuple[list[str], list[str]]:
         if not b["timer_active"]:
             warn.append(f"Backup {name}: Timer ist nicht aktiv")
         elif b["result"] and b["result"] != "success":
-            warn.append(f"Backup {name} fehlgeschlagen ({b['result']}, Exit {b['exit']}), "
-                        f"Log: journalctl -u {b['unit']} -n 50")
-        elif age is not None and age > BACKUP_MAX_AGE and not b["running"]:
+            where = f"Log: journalctl -u {b['unit']} -n 50" if b["unit"] else "Details in der Backrest-UI"
+            detail = f", Exit {b['exit']}" if b["unit"] else (f": {b['exit']}" if b["exit"] else "")
+            warn.append(f"Backup {name} fehlgeschlagen ({b['result']}{detail}), {where}")
+        elif age is not None and age > max_age and not b["running"]:
             warn.append(f"Backup {name} zuletzt vor {fmt_age(age)}")
-        elif age is None and uptime > BACKUP_MAX_AGE:
+        elif age is None and not b["unit"]:
+            warn.append(f"Backup {name}: noch kein abgeschlossener Lauf")
+        elif age is None and uptime > max_age:
             warn.append(f"Backup {name} lief seit dem Neustart vor {fmt_age(uptime)} nicht")
     return warn, lines
 
