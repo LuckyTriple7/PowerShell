@@ -431,7 +431,113 @@ def backrest():
     return sorted(last.values(), key=lambda e: e["timer"])
 
 
-MAILCOW_INFO ="/opt/mailcow-dockerized/data/web/inc/app_info.inc.php"
+def journal_json(args, hours=24):
+    out = []
+    for line in run(["journalctl", "--since", f"-{hours}h", "-o", "json", "--no-pager", "-q", *args],
+                    timeout=90).splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        msg = e.get("MESSAGE", "")
+        if isinstance(msg, list):
+            msg = bytes(msg).decode("utf-8", "replace")
+        out.append((int(e.get("__REALTIME_TIMESTAMP", "0")) / 1e6, str(msg)))
+    return out
+
+
+SSH_ACCEPTED = re.compile(r"Accepted (\S+) for (\S+) from (\S+) port")
+SSH_FAILED = re.compile(r"(?:Failed \S+ for (?:invalid user )?|Invalid user )(\S*) from (\S+) port")
+SUDO_LINE = re.compile(r"^\s*(\S+) : (?:(.+?) ; )?(?:TTY=\S+ ; )?PWD=\S* ; USER=(\S+) ; COMMAND=(.*)$")
+
+
+def logins():
+    """SSH-Anmeldungen und sudo der letzten 24 h, zusammengefasst (keine Fingerprints)."""
+    accepted, failed = {}, {}
+    # OpenSSH 10 (Debian 13) loggt als sshd-session/sshd-auth, ältere als sshd
+    for t, msg in journal_json(["-t", "sshd", "-t", "sshd-session", "-t", "sshd-auth"]):
+        m = SSH_ACCEPTED.search(msg)
+        if m:
+            method, user, ip = m.groups()
+            a = accepted.setdefault((user, ip), {"user": user, "ip": ip, "method": method, "count": 0, "last": 0})
+            a["count"] += 1
+            a["last"] = max(a["last"], t)
+            continue
+        m = SSH_FAILED.search(msg)
+        if m:
+            f = failed.setdefault(m.group(2), {"ip": m.group(2), "count": 0, "users": set()})
+            f["count"] += 1
+            f["users"].add(m.group(1) or "?")
+    sudo_ok, sudo_fail = {}, {}
+    for t, msg in journal_json(["-t", "sudo"]):
+        m = SUDO_LINE.match(msg)
+        if not m:
+            continue
+        user, problem, target, cmd = m.groups()
+        cmd = cmd.strip()[:120]
+        if problem:  # "command not allowed", "user NOT in sudoers", "3 incorrect password attempts"
+            k = (user, problem, cmd)
+            sudo_fail[k] = sudo_fail.get(k, 0) + 1
+        else:
+            sudo_ok[(user, target)] = sudo_ok.get((user, target), 0) + 1
+    return {
+        "accepted": sorted(accepted.values(), key=lambda a: -a["last"]),
+        "failed": sorted(({**f, "users": sorted(f["users"])[:5]} for f in failed.values()),
+                         key=lambda f: -f["count"])[:20],
+        "sudo_ok": [{"user": u, "target": t, "count": n} for (u, t), n in sorted(sudo_ok.items())],
+        "sudo_fail": [{"user": u, "problem": p, "command": c, "count": n}
+                      for (u, p, c), n in sorted(sudo_fail.items(), key=lambda kv: -kv[1])][:15],
+    }
+
+
+def tailscale():
+    d = json.loads(run(["tailscale", "status", "--json"]) or "{}")
+    if not d:
+        return {"error": "tailscale status lieferte nichts"}
+    s = d.get("Self") or {}
+    return {
+        "state": d.get("BackendState", ""),
+        "online": bool(s.get("Online")),
+        "key_expiry": s.get("KeyExpiry", ""),
+        "health": [str(h)[:200] for h in d.get("Health") or []],
+        "peers": sorted(({"name": p.get("HostName", "?"), "online": bool(p.get("Online")),
+                          "last_seen": p.get("LastSeen", ""), "os": p.get("OS", "")}
+                         for p in (d.get("Peer") or {}).values()), key=lambda p: p["name"].lower()),
+    }
+
+
+def mail_queue():
+    """Postfix-Warteschlange von Mailcow. Empfänger nur als Domain (Datenschutz)."""
+    name = run(["docker", "ps", "--filter", "label=com.docker.compose.service=postfix-mailcow",
+                "--format", "{{.Names}}"]).strip().splitlines()
+    if not name:
+        return {"error": "Postfix-Container von Mailcow nicht gefunden"}
+    queues, deferred, oldest = {}, {}, 0
+    now = time.time()
+    for line in run(["docker", "exec", name[0], "postqueue", "-j"]).splitlines():
+        try:
+            q = json.loads(line)
+        except ValueError:
+            continue
+        qn = q.get("queue_name", "?")
+        queues[qn] = queues.get(qn, 0) + 1
+        oldest = max(oldest, now - q.get("arrival_time", now))
+        for r in q.get("recipients") or []:
+            reason = r.get("delay_reason")
+            if reason:
+                dom = r.get("address", "").rpartition("@")[2] or "?"
+                key = (dom, " ".join(reason.split())[:160])
+                deferred[key] = deferred.get(key, 0) + 1
+    return {
+        "total": sum(queues.values()),
+        "queues": queues,
+        "oldest": oldest,
+        "reasons": [{"domain": d, "reason": r, "count": n}
+                    for (d, r), n in sorted(deferred.items(), key=lambda kv: -kv[1])][:5],
+    }
+
+
+MAILCOW_INFO = "/opt/mailcow-dockerized/data/web/inc/app_info.inc.php"
 
 
 def mailcow():
@@ -467,6 +573,9 @@ def main():
         "docker_disk": safe(docker_disk),
         "mailcow": safe(mailcow),
         "backrest": safe(backrest),
+        "logins": safe(logins),
+        "tailscale": safe(tailscale),
+        "mail_queue": safe(mail_queue),
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     tmp = OUT + ".tmp"

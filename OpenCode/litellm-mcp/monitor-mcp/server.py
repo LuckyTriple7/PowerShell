@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -1029,11 +1030,12 @@ async def health_check() -> str:
     else:
         ok.append("Image-Prüfung läuft noch – später image_updates aufrufen")
 
-    mc = area_mailcow(status, await mailcow_latest())
-    if mc.warnings:
-        warn.extend(mc.warnings)
-    else:
-        ok.append(f"Mailcow: {mc.summary}")
+    for extra in (area_mailcow(status, await mailcow_latest()), area_logins(status),
+                  area_tailscale(status), area_mailq(status)):
+        if extra.warnings:
+            warn.extend(extra.warnings)
+        else:
+            ok.append(f"{extra.title}: {extra.summary}")
 
     if status and note:
         warn.append(note)
@@ -1149,6 +1151,130 @@ def area_mailcow(status: Optional[dict], latest: dict) -> Area:
     a.warn(f"Mailcow {newer[-1]} verfügbar (läuft {installed}), "
            f"Notes: https://github.com/mailcow/mailcow-dockerized/releases/tag/{newer[-1]}", YELLOW)
     a.todos.append("`cd /opt/mailcow-dockerized && ./update.sh`")
+    return a
+
+
+# Anmeldungen von hier sind normal: Tailscale, LAN, Docker, localhost. Bewusst als Liste statt
+# ip.is_private – das zählt auch Doku-/Sondernetze (z. B. 203.0.113.0/24) als privat.
+TRUSTED_NETS = [ipaddress.ip_network(n) for n in (
+    "100.64.0.0/10", "fd7a:115c:a1e0::/48",                     # Tailscale
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",  # LAN/Docker
+    "127.0.0.0/8", "::1/128")]
+# Geräte, deren Ausfall auffallen soll (Backup-Ziel, HA/Hermes)
+TAILSCALE_REQUIRED = [s.strip() for s in os.environ.get("TAILSCALE_REQUIRED", "raspberrypi,homeassistant").split(",")
+                      if s.strip()]
+# Dauerhafte, gewollte Hinweise von tailscale status (accept-routes ist bewusst aus, sonst kapert die
+# Subnetzroute das eigene LAN)
+TAILSCALE_HEALTH_IGNORE = [s.strip() for s in os.environ.get("TAILSCALE_HEALTH_IGNORE", "accept-routes").split(",")
+                           if s.strip()]
+
+
+def trusted_ip(ip: str) -> bool:
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(a in n for n in TRUSTED_NETS if a.version == n.version)
+
+
+def parse_iso(value: str) -> float:
+    if not value or value.startswith("0001-"):
+        return 0.0
+    # "2026-10-03T06:00:00.1Z" → Sekundenbruchteile weg, Z als UTC
+    try:
+        return datetime.datetime.fromisoformat(re.sub(r"\.\d+", "", value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def area_logins(status: Optional[dict]) -> Area:
+    a = Area("Anmeldungen (24 h)")
+    lg = (status or {}).get("logins")
+    if not lg or lg.get("error"):
+        a.summary = (lg or {}).get("error", "keine Daten (Collector zu alt)")
+        a.raise_to(YELLOW)
+        return a
+    now = time.time()
+    acc, failed = lg.get("accepted") or [], lg.get("failed") or []
+    sudo_ok, sudo_fail = lg.get("sudo_ok") or [], lg.get("sudo_fail") or []
+    for x in acc:
+        line = f"SSH {x['user']} von {x['ip']} ({x['method']}) {x['count']}×, zuletzt vor {fmt_age(now - x['last'])}"
+        if trusted_ip(x["ip"]):
+            a.details.append(line)
+        else:
+            a.warn(f"{line} – NICHT über Tailscale/LAN")
+    n_failed = sum(f["count"] for f in failed)
+    if n_failed:
+        a.details.append("Fehlgeschlagen: " + ", ".join(f"{f['ip']} {f['count']}× ({', '.join(f['users'])})"
+                                                         for f in failed[:5]))
+        if n_failed > 20:
+            a.warn(f"{n_failed} fehlgeschlagene SSH-Anmeldungen", YELLOW)
+    for s in sudo_fail:
+        a.warn(f"sudo abgelehnt für {s['user']} ({s['problem']}) {s['count']}×: {s['command']}", YELLOW)
+    users = sorted({x["user"] for x in acc})
+    a.summary = (f"{sum(x['count'] for x in acc)} SSH-Anmeldungen" + (f" ({', '.join(users)})" if users else "")
+                 + f", {n_failed} fehlgeschlagen, sudo {sum(s['count'] for s in sudo_ok)}× erlaubt"
+                 + (f", {sum(s['count'] for s in sudo_fail)}× abgelehnt" if sudo_fail else ""))
+    return a
+
+
+def area_tailscale(status: Optional[dict]) -> Area:
+    a = Area("Tailscale")
+    ts = (status or {}).get("tailscale")
+    if not ts or ts.get("error"):
+        a.summary = (ts or {}).get("error", "keine Daten (Collector zu alt)")
+        a.raise_to(YELLOW)
+        return a
+    if ts.get("state") != "Running" or not ts.get("online"):
+        a.warn(f"vserv01 nicht verbunden (Status {ts.get('state') or '?'})")
+    peers = ts.get("peers") or []
+    online = [p for p in peers if p["online"]]
+    for name in TAILSCALE_REQUIRED:
+        p = next((p for p in peers if p["name"].lower() == name.lower()), None)
+        if p is None:
+            a.warn(f"{name} fehlt im Tailnet", YELLOW)
+        elif not p["online"]:
+            seen = parse_iso(p["last_seen"])
+            a.warn(f"{name} offline" + (f" seit {fmt_age(time.time() - seen)}" if seen else ""), YELLOW)
+    for h in ts.get("health") or []:
+        if not any(i in h for i in TAILSCALE_HEALTH_IGNORE):
+            a.warn(f"Tailscale meldet: {h}", YELLOW)
+    exp = parse_iso(ts.get("key_expiry", ""))
+    if exp and exp - time.time() < 14 * 86400:
+        a.warn(f"Tailscale-Key von vserv01 läuft in {fmt_until(exp - time.time())} ab", YELLOW)
+    a.summary = ("verbunden" if ts.get("state") == "Running" else ts.get("state", "?")) \
+        + f", {len(online)} von {len(peers)} Geräten online"
+    off = [p for p in peers if not p["online"]]
+    if off:
+        a.details.append("Offline: " + ", ".join(
+            p["name"] + (f" (vor {fmt_age(time.time() - parse_iso(p['last_seen']))})" if parse_iso(p["last_seen"]) else "")
+            for p in off))
+    return a
+
+
+def area_mailq(status: Optional[dict]) -> Area:
+    a = Area("Mail-Warteschlange")
+    mq = (status or {}).get("mail_queue")
+    if not mq or mq.get("error"):
+        a.summary = (mq or {}).get("error", "keine Daten (Collector zu alt)")
+        a.raise_to(YELLOW)
+        return a
+    total, queues, oldest = mq.get("total", 0), mq.get("queues") or {}, mq.get("oldest", 0)
+    if not total:
+        a.summary = "leer"
+        return a
+    a.summary = f"{total} Mails (" + ", ".join(f"{k} {v}" for k, v in queues.items()) \
+        + f"), älteste vor {fmt_age(oldest)}"
+    if total > 50 or oldest > 24 * 3600:
+        a.warn(f"Mail-Warteschlange: {total} Mails, älteste vor {fmt_age(oldest)}")
+    elif oldest > 3600:
+        a.warn(f"Mails hängen seit {fmt_age(oldest)} in der Warteschlange", YELLOW)
+    if queues.get("hold"):
+        a.warn(f"{queues['hold']} Mails angehalten (hold)", YELLOW)
+    for r in mq.get("reasons") or []:
+        a.details.append(f"{r['domain']} ({r['count']}×): {r['reason']}")
+    if a.warnings:
+        a.todos.append("`cd /opt/mailcow-dockerized && docker compose exec postfix-mailcow postqueue -p`")
     return a
 
 
@@ -1389,7 +1515,8 @@ async def report(section: str = "check") -> str:
     extra = [f"Hinweis: {note}"] if note else []
 
     if section == "sicherheit":
-        areas = [area_crowdsec(status, 8), area_from_maintenance(status, "certs", "Zertifikate"),
+        areas = [area_crowdsec(status, 8), area_logins(status), area_tailscale(status),
+                 area_from_maintenance(status, "certs", "Zertifikate"),
                  area_from_maintenance(status, "backups", "Backups")]
         return render("🛡️ vserv01 – Sicherheit", areas, False, extra)
 
@@ -1412,7 +1539,8 @@ async def report(section: str = "check") -> str:
             for name, g in sorted(groups.items(), key=lambda kv: -kv[1][0])[:10]]
         busy = [s for s in sorted(stats, key=lambda s: -s["cpu"]) if s["cpu"] >= 1][:8]
         cpu = ["**CPU über 1 %**"] + ([f"{s['name']} – {s['cpu']:.1f} %" for s in busy] or ["alles ruhig"])
-        areas = [sysa, area_services(status, states), area_from_maintenance(status, "docker", "Docker-Speicher")]
+        areas = [sysa, area_services(status, states), area_mailq(status),
+                 area_from_maintenance(status, "docker", "Docker-Speicher")]
         return render("🖥️ vserv01 – Ressourcen", areas, False, stacks + [""] + cpu + extra)
 
     # check: alles kurz; Images ohne Versionssuche (die dauert), LiteLLM aus dem Cache bzw. frisch
@@ -1420,6 +1548,7 @@ async def report(section: str = "check") -> str:
                                           mailcow_latest())
     areas = [area_system(m, status), area_services(status, states), area_apt(status),
              area_images(False, done), area_mailcow(status, mc), area_litellm(info), area_crowdsec(status, 0),
+             area_logins(status), area_tailscale(status), area_mailq(status),
              area_from_maintenance(status, "certs", "Zertifikate"),
              area_from_maintenance(status, "backups", "Backups"),
              area_from_maintenance(status, "docker", "Docker-Speicher")]
