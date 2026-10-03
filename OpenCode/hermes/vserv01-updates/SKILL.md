@@ -35,4 +35,4 @@ Gib die Antwort GENAU EINMAL aus, ohne Text davor oder danach, mit je einer Leer
 <Ausgabe des Skripts unverändert>
 
 ✅ **To-do**
-<nur Befehle aus den Werkzeug-Antworten, als root auf vserv01. Bei neuer Hauptversion: "Changelog lesen, vor allem bei Datenbanken". Sonst "nichts zu tun">
+<die Befehle unter "Aktualisieren (als root)" unverändert und einzeln als Code-Zeile übernehmen; Mailcow nur mit ./update.sh, nie mit docker compose pull. Bei neuer Hauptversion: "Changelog lesen, vor allem bei Datenbanken". Sonst "nichts zu tun">

@@ -164,6 +164,48 @@ def cstack(c: dict) -> str:
     return (c.get("Labels") or {}).get("com.docker.compose.project") or "(ohne Stack)"
 
 
+def compose_info(c: dict) -> dict:
+    """Ordner, Compose-Dateien und Dienstname aus den Labels, die docker compose setzt."""
+    lab = c.get("Labels") or {}
+    return {
+        "dir": lab.get("com.docker.compose.project.working_dir", ""),
+        "files": [f for f in lab.get("com.docker.compose.project.config_files", "").split(",") if f],
+        "service": lab.get("com.docker.compose.service", ""),
+    }
+
+
+DEFAULT_COMPOSE = {"compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"}
+
+
+def update_commands(results: list) -> list[str]:
+    """Konkrete Befehle je Stack-Ordner, nur für die betroffenen Dienste."""
+    stacks: dict = {}
+    for r in results:
+        if r["status"] != "update" and not r["stale"]:
+            continue
+        for ci in r.get("compose") or []:
+            # dict statt set: Reihenfolge der Compose-Dateien zählt (erste = Basis)
+            s = stacks.setdefault(ci["dir"], {"files": {}, "services": set()})
+            s["files"].update(dict.fromkeys(ci["files"]))
+            if ci["service"]:
+                s["services"].add(ci["service"])
+    cmds = []
+    for d, s in sorted(stacks.items()):
+        if not d:
+            cmds.append("Container ohne Compose-Stack: Image pullen und Container neu erstellen")
+        elif "mailcow" in d:
+            # Mailcow pinnt seine Images selbst und aktualisiert nur über das eigene Skript
+            cmds.append(f"cd {d} && ./update.sh --check   (meldet es ein Update: ./update.sh)")
+        else:
+            names = {f.rsplit("/", 1)[-1] for f in s["files"]}
+            # Mehrere oder abweichende Compose-Dateien (z. B. litellm-caveman) explizit angeben
+            fs = "" if len(names) <= 1 and names <= DEFAULT_COMPOSE else \
+                "".join(f" -f {f.rsplit('/', 1)[-1]}" for f in s["files"])
+            svc = " ".join(sorted(s["services"]))
+            cmds.append(f"cd {d} && docker compose{fs} pull {svc} && docker compose{fs} up -d {svc}")
+    return cmds
+
+
 _stats_cache = {"time": 0.0, "data": []}
 
 
@@ -391,7 +433,8 @@ async def check_images(with_versions: bool) -> list:
     sem = asyncio.Semaphore(6)
 
     async def check(ref: str, cs: list) -> dict:
-        res = {"ref": ref, "containers": sorted(cname(c) for c in cs), "stale": [], "newer": None, "major": None}
+        res = {"ref": ref, "containers": sorted(cname(c) for c in cs), "stale": [], "newer": None, "major": None,
+               "compose": [compose_info(c) for c in cs]}
         parsed = parse_ref(ref)
         tagged = await docker_get(f"/images/{ref}/json") if parsed else None
         base = tagged or await docker_get(f"/images/{cs[0]['ImageID']}/json") or {}
@@ -751,7 +794,7 @@ def format_images(results: list, checked_at: float, with_versions: bool) -> str:
             lines.append(f"  {r['ref']} → {r['major']}")
     lines.append(f"Aktuell: {len(groups.get('current', []))}")
     if groups.get("local"):
-        lines.append("Lokal gebaut oder privat, nicht prüfbar: " + ", ".join(sorted(r["ref"] for r in groups["local"])))
+        lines.append(f"Lokal gebaut oder privat (nicht prüfbar): {len(groups['local'])}")
     if groups.get("skip"):
         lines.append("Per Digest gepinnt oder ohne Namen: " + ", ".join(sorted(r["ref"] for r in groups["skip"])))
     if groups.get("error"):
@@ -764,8 +807,10 @@ def format_images(results: list, checked_at: float, with_versions: bool) -> str:
         ignored = sorted(r["ref"] for r in results if is_ignored(r["ref"]))
         if ignored:
             lines.append("Versions-Tags nicht gesucht (IMAGE_IGNORE, Version legt das Projekt fest): " + ", ".join(ignored))
-    if groups.get("update") or stale:
-        lines.append("Aktualisieren (als root im Stack-Ordner): docker compose pull && docker compose up -d")
+    cmds = update_commands(results)
+    if cmds:
+        lines.append("Aktualisieren (als root):")
+        lines.extend(f"  {c}" for c in cmds)
     return "\n".join(lines)
 
 
