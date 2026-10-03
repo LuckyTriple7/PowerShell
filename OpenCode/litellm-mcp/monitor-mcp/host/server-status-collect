@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""Sammelt Host-Daten für den Monitor-MCP (läuft als root über server-status.timer).
+
+Schreibt /var/lib/server-status/status.json (lesbar für alle). Der Container sieht
+APT, systemd, Platten und Journal des Hosts nicht, deshalb dieser Umweg.
+Führt kein `apt-get update` aus, das erledigt apt-daily.timer.
+"""
+import calendar
+import glob
+import json
+import os
+import re
+import socket
+import ssl
+import subprocess
+import time
+
+OUT = "/var/lib/server-status/status.json"
+ENV = {**os.environ, "LANG": "C", "LC_ALL": "C"}
+
+
+def run(cmd, timeout=60):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=ENV).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def os_name():
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return ""
+
+
+def apt_updates():
+    pkgs = []
+    for line in run(["apt", "list", "--upgradable"]).splitlines():
+        if "[upgradable from:" not in line:
+            continue
+        head, _, old = line.partition(" [upgradable from: ")
+        parts = head.split()
+        name, _, suites = parts[0].partition("/")
+        pkgs.append({
+            "name": name,
+            "new": parts[1] if len(parts) > 1 else "",
+            "old": old.rstrip("]"),
+            "suite": suites,
+            "security": "-security" in suites,
+        })
+    return pkgs
+
+
+def apt_lists_time():
+    stamp = "/var/lib/apt/periodic/update-success-stamp"
+    if os.path.exists(stamp):
+        return os.path.getmtime(stamp)
+    files = glob.glob("/var/lib/apt/lists/*Release")
+    return max((os.path.getmtime(f) for f in files), default=0)
+
+
+def failed_units():
+    units = []
+    out = run(["systemctl", "list-units", "--failed", "--all", "--plain", "--no-legend", "--full"])
+    for line in out.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        info = {}
+        for kv in run(["systemctl", "show", parts[0], "-p", "Result", "-p", "StateChangeTimestamp"]).splitlines():
+            k, _, v = kv.partition("=")
+            info[k] = v
+        units.append({
+            "unit": parts[0],
+            "sub": parts[3],
+            "description": parts[4] if len(parts) > 4 else "",
+            "result": info.get("Result", ""),
+            "since": info.get("StateChangeTimestamp", ""),
+        })
+    return units
+
+
+def disks():
+    out = []
+    cmd = ["df", "-P", "-B1", "-x", "tmpfs", "-x", "devtmpfs", "-x", "overlay",
+           "-x", "squashfs", "-x", "efivarfs", "-x", "nsfs"]
+    for line in run(cmd).splitlines()[1:]:
+        p = line.split(None, 5)
+        if len(p) == 6 and p[1].isdigit():
+            out.append({"device": p[0], "size": int(p[1]), "used": int(p[2]), "avail": int(p[3]), "mount": p[5]})
+    return out
+
+
+def top_processes(n=10):
+    # Nach Programmname zusammengefasst, ohne Argumente (die können Secrets enthalten)
+    agg = {}
+    for line in run(["ps", "-eo", "rss=,comm="]).splitlines():
+        p = line.split(None, 1)
+        if len(p) == 2 and p[0].isdigit():
+            a = agg.setdefault(p[1].strip(), [0, 0])
+            a[0] += int(p[0]) * 1024
+            a[1] += 1
+    top = sorted(agg.items(), key=lambda kv: -kv[1][0])[:n]
+    return [{"name": k, "rss": v[0], "count": v[1]} for k, v in top]
+
+
+def journal_errors(hours=24, limit=10):
+    groups = {}
+    out = run(["journalctl", "-p", "err", "--since", f"-{hours}h", "-o", "json",
+               "--no-pager", "-q", "-n", "5000"], timeout=90)
+    for line in out.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        unit = e.get("_SYSTEMD_UNIT", "")
+        # session-123.scope sagt nichts, dann lieber den Programmnamen (sudo, sshd, ...)
+        key = (unit if unit and not unit.endswith(".scope") else "") or e.get("SYSLOG_IDENTIFIER") or unit or "?"
+        msg = e.get("MESSAGE", "")
+        if isinstance(msg, list):
+            msg = bytes(msg).decode("utf-8", "replace")
+        g = groups.setdefault(key, {"source": key, "count": 0, "last": "", "time": 0})
+        g["count"] += 1
+        g["last"] = " ".join(str(msg).split())[:200]
+        g["time"] = int(e.get("__REALTIME_TIMESTAMP", "0")) / 1e6
+    return sorted(groups.values(), key=lambda g: -g["count"])[:limit]
+
+
+def kernel():
+    running = os.uname().release
+    installed = sorted(glob.glob("/boot/vmlinuz-*"), key=os.path.getmtime)
+    newest = installed[-1].split("vmlinuz-", 1)[1] if installed else running
+    return {"running": running, "newest": newest}
+
+
+def reboot_required():
+    pkgs = []
+    try:
+        with open("/run/reboot-required.pkgs", encoding="utf-8") as f:
+            pkgs = sorted({p.strip() for p in f if p.strip()})
+    except OSError:
+        pass
+    return {"flag": os.path.exists("/run/reboot-required"), "packages": pkgs}
+
+
+CROWDSEC_CONTAINER = "crowdsec"
+
+
+def cscli(*args, timeout=60):
+    out = run(["docker", "exec", CROWDSEC_CONTAINER, "cscli", *args, "-o", "json"], timeout=timeout)
+    if out.strip() == "null":  # z. B. keine Sperren
+        return None
+    # Manche Befehle (hub list) schreiben vor dem JSON noch Textzeilen
+    start = min((i for i in (out.find("{"), out.find("[")) if i >= 0), default=-1)
+    if start < 0:
+        raise ValueError("keine JSON-Ausgabe")
+    return json.loads(out[start:])
+
+
+def crowdsec():
+    """Zusammenfassung statt Rohdaten: Sperren, Alerts 24 h, Bouncer, Maschinen, Hub."""
+    try:
+        version = run(["docker", "exec", CROWDSEC_CONTAINER, "cscli", "version"]).split("\n", 1)[0]
+        if not version.lower().startswith("version"):
+            return {"error": f"Container {CROWDSEC_CONTAINER} nicht erreichbar"}
+        data = {"version": version.split(":", 1)[1].strip()}
+
+        decisions = []
+        for alert in cscli("decisions", "list") or []:
+            src = alert.get("source") or {}
+            for d in alert.get("decisions") or []:
+                decisions.append({
+                    "ip": d.get("value"), "cn": src.get("cn", ""), "as": src.get("as_name", ""),
+                    "scenario": d.get("scenario", ""), "duration": d.get("duration", ""),
+                    "type": d.get("type", ""), "origin": d.get("origin", ""),
+                    "created": alert.get("created_at", ""),
+                })
+        decisions.sort(key=lambda d: d["created"], reverse=True)
+        data["decisions_total"] = len(decisions)
+        data["decisions"] = decisions[:50]
+
+        by_origin, by_reason = {}, {}
+        for reason, origins in (cscli("metrics", "show", "decisions").get("decisions") or {}).items():
+            for origin, actions in origins.items():
+                n = sum(actions.values())
+                by_origin[origin] = by_origin.get(origin, 0) + n
+                by_reason[reason] = by_reason.get(reason, 0) + n
+        data["decisions_by_origin"] = by_origin
+        data["decisions_by_reason"] = dict(sorted(by_reason.items(), key=lambda kv: -kv[1])[:15])
+
+        scen, countries, ips = {}, {}, {}
+        alerts = cscli("alerts", "list", "--since", "24h", "-l", "0") or []
+        for a in alerts:
+            src = a.get("source") or {}
+            scen[a.get("scenario", "?")] = scen.get(a.get("scenario", "?"), 0) + 1
+            cn = src.get("cn") or "?"
+            countries[cn] = countries.get(cn, 0) + 1
+            ip = src.get("ip") or src.get("value") or "?"
+            ips[ip] = ips.get(ip, 0) + 1
+        top = lambda d, n=10: dict(sorted(d.items(), key=lambda kv: -kv[1])[:n])
+        data["alerts_24h"] = {"count": len(alerts), "scenarios": top(scen), "countries": top(countries), "ips": top(ips, 5)}
+
+        data["bouncers"] = [{
+            "name": b.get("name"), "type": b.get("type", ""), "ip": b.get("ip_address", ""),
+            "last_pull": b.get("last_pull", ""), "revoked": b.get("revoked", False), "version": b.get("version", ""),
+        } for b in cscli("bouncers", "list") or []]
+        data["machines"] = [{
+            "name": m.get("machineId"), "last_heartbeat": m.get("last_heartbeat", ""),
+            "last_push": m.get("last_push", ""), "version": m.get("version", ""),
+        } for m in cscli("machines", "list") or []]
+
+        hub = cscli("hub", "list")
+        issues, enabled = [], 0
+        for kind, items in (hub or {}).items():
+            for it in items or []:
+                status = str(it.get("status", ""))
+                if "enabled" in status:
+                    enabled += 1
+                if "update" in status or "tainted" in status:
+                    issues.append({"kind": kind, "name": it.get("name"), "status": status,
+                                   "local": it.get("local_version", ""), "latest": it.get("version", "")})
+        data["hub"] = {"enabled": enabled, "issues": issues}
+        return data
+    except (ValueError, KeyError, AttributeError) as e:
+        return {"error": f"cscli-Ausgabe nicht lesbar: {e}"}
+
+
+BACKUP_TIMER_RE = re.compile(r"(backup|dump)", re.I)
+
+
+def backups():
+    """Backup-Timer (Name enthält backup/dump): Zustand des Timers, letzter Lauf des Service."""
+    out = []
+    timers = run(["systemctl", "list-units", "--type=timer", "--all", "--plain", "--no-legend"])
+    for line in timers.splitlines():
+        timer = line.split(None, 1)[0] if line.strip() else ""
+        if not timer.endswith(".timer") or not BACKUP_TIMER_RE.search(timer):
+            continue
+        t = dict(kv.partition("=")[::2] for kv in
+                 run(["systemctl", "show", timer, "-p", "Unit", "-p", "ActiveState"]).splitlines())
+        unit = t.get("Unit") or timer[:-6] + ".service"
+        s = dict(kv.partition("=")[::2] for kv in
+                 run(["systemctl", "show", unit, "--timestamp=unix", "-p", "Result", "-p", "ExecMainStatus",
+                      "-p", "ExecMainExitTimestamp", "-p", "ActiveState"]).splitlines())
+        last = s.get("ExecMainExitTimestamp", "")
+        out.append({
+            "timer": timer,
+            "unit": unit,
+            "timer_active": t.get("ActiveState") == "active",
+            "running": s.get("ActiveState") in ("activating", "active"),
+            "result": s.get("Result", ""),
+            "exit": s.get("ExecMainStatus", ""),
+            # 0 = seit dem letzten Neustart nicht gelaufen (systemd vergisst das beim Booten)
+            "last": float(last[1:]) if last.startswith("@") and last[1:].isdigit() else 0,
+        })
+    return sorted(out, key=lambda b: b["timer"])
+
+
+# Zertifikate von NPMplus und Mailcow. Bei NPMplus zählt, was nginx wirklich ausliefert
+# (SNI-Abruf): Dateien zu gelöschten Proxy-Hosts bleiben sonst liegen und würden ewig als
+# "läuft ab" auffallen. nginx lauscht nur auf der öffentlichen IP, nicht auf 127.0.0.1.
+CERT_SOURCES = [
+    ("npmplus", "/opt/npmplus/tls/**/fullchain*.pem", ("159.195.246.83", 443)),
+    ("mailcow", "/opt/mailcow-dockerized/data/assets/ssl/cert.pem", None),
+]
+
+
+def x509_info(data, der=False):
+    cmd = ["openssl", "x509", "-noout", "-startdate", "-enddate", "-ext", "subjectAltName"]
+    if der:
+        cmd[2:2] = ["-inform", "DER"]
+    try:
+        out = subprocess.run(cmd, input=data, capture_output=True, timeout=10, env=ENV).stdout.decode()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    info = {"names": sorted(set(re.findall(r"DNS:([^,\s]+)", out)))}
+    for key, field in (("notBefore", "not_before"), ("notAfter", "not_after")):
+        m = re.search(rf"{key}=(.+)", out)
+        if not m:
+            return None
+        try:
+            info[field] = calendar.timegm(time.strptime(" ".join(m.group(1).split()), "%b %d %H:%M:%S %Y GMT"))
+        except ValueError:
+            return None
+    return info
+
+
+def served_cert(addr, name):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    sni = "probe." + name[2:] if name.startswith("*.") else name
+    try:
+        with socket.create_connection(addr, timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=sni) as tls:
+                der = tls.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError):
+        return None
+    return x509_info(der, der=True) if der else None
+
+
+def certificates():
+    out = []
+    for source, pattern, addr in CERT_SOURCES:
+        newest = {}
+        for path in glob.glob(pattern, recursive=True):
+            try:
+                with open(path, "rb") as f:
+                    info = x509_info(f.read())
+            except OSError:
+                continue
+            if not info or not info["names"]:
+                continue
+            key = tuple(info["names"])
+            if key not in newest or info["not_after"] > newest[key]["not_after"]:
+                newest[key] = info
+        if not newest:
+            out.append({"source": source, "error": f"keine Zertifikate unter {pattern}"})
+            continue
+        for info in newest.values():
+            entry = {"source": source, **info, "served": None}
+            if addr:
+                live = served_cert(addr, info["names"][0])
+                entry["served"] = bool(live and set(info["names"]) & set(live["names"]))
+                if entry["served"]:
+                    # Ausgeliefert wird evtl. noch ein älteres (nginx nicht neu geladen)
+                    entry.update(not_before=live["not_before"], not_after=live["not_after"])
+            out.append(entry)
+    return sorted(out, key=lambda c: (c["source"], c.get("not_after", 0)))
+
+
+SIZE_RE = re.compile(r"([\d.]+)\s*([kKMGTP]?B)")
+SIZE_UNITS = {"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12, "PB": 1e15}
+
+
+def parse_size(text):
+    m = SIZE_RE.search(text or "")
+    return int(float(m.group(1)) * SIZE_UNITS.get(m.group(2), 1)) if m else 0
+
+
+def docker_disk():
+    """docker system df: Größe und freigebbarer Platz je Typ (Images, Container, Volumes, Build-Cache)."""
+    out = {}
+    for line in run(["docker", "system", "df", "--format", "{{json .}}"], timeout=120).splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        out[row.get("Type", "?")] = {
+            "count": int(row.get("TotalCount") or 0),
+            "active": int(row.get("Active") or 0),
+            "size": parse_size(row.get("Size")),
+            "reclaimable": parse_size(row.get("Reclaimable")),
+        }
+    return out or {"error": "docker system df lieferte nichts"}
+
+
+def safe(fn):
+    # Ein Fehler in einem Teil darf status.json nicht verhindern, sonst fällt der ganze Monitor aus
+    try:
+        return fn()
+    except Exception as e:
+        return {"error": f"{fn.__name__}: {e.__class__.__name__}: {e}"}
+
+
+def main():
+    data = {
+        "time": time.time(),
+        "hostname": socket.gethostname(),
+        "os": os_name(),
+        "kernel": kernel(),
+        "reboot": reboot_required(),
+        "apt": {"lists_time": apt_lists_time(), "updates": apt_updates()},
+        "failed_units": failed_units(),
+        "disks": disks(),
+        "top_processes": top_processes(),
+        "journal_errors": journal_errors(),
+        "crowdsec": crowdsec(),
+        "backups": safe(backups),
+        "certificates": safe(certificates),
+        "docker_disk": safe(docker_disk),
+    }
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    tmp = OUT + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, OUT)
+
+
+if __name__ == "__main__":
+    main()
