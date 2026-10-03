@@ -1160,6 +1160,9 @@ TRUSTED_NETS = [ipaddress.ip_network(n) for n in (
     "100.64.0.0/10", "fd7a:115c:a1e0::/48",                     # Tailscale
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",  # LAN/Docker
     "127.0.0.0/8", "::1/128")]
+# Abgelehnte sudo-Befehle dieser Benutzer nur als Info: Der OpenCode-Agent probiert z. B. docker inspect,
+# das bewusst nicht freigegeben ist (zeigt Env-Secrets aller Container).
+SUDO_FAIL_INFO_USERS = [s.strip() for s in os.environ.get("SUDO_FAIL_INFO_USERS", "opencode").split(",") if s.strip()]
 # Geräte, deren Ausfall auffallen soll (Backup-Ziel, HA/Hermes)
 TAILSCALE_REQUIRED = [s.strip() for s in os.environ.get("TAILSCALE_REQUIRED", "raspberrypi,homeassistant").split(",")
                       if s.strip()]
@@ -1210,7 +1213,11 @@ def area_logins(status: Optional[dict]) -> Area:
         if n_failed > 20:
             a.warn(f"{n_failed} fehlgeschlagene SSH-Anmeldungen", YELLOW)
     for s in sudo_fail:
-        a.warn(f"sudo abgelehnt für {s['user']} ({s['problem']}) {s['count']}×: {s['command']}", YELLOW)
+        line = f"sudo abgelehnt für {s['user']} ({s['problem']}) {s['count']}×: {s['command']}"
+        if s["user"] in SUDO_FAIL_INFO_USERS:
+            a.details.append(line)  # erwartbar, z. B. der OpenCode-Agent probiert docker inspect
+        else:
+            a.warn(line, YELLOW)
     users = sorted({x["user"] for x in acc})
     a.summary = (f"{sum(x['count'] for x in acc)} SSH-Anmeldungen" + (f" ({', '.join(users)})" if users else "")
                  + f", {n_failed} fehlgeschlagen, sudo {sum(s['count'] for s in sudo_ok)}× erlaubt"
