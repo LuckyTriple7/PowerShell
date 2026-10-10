@@ -149,7 +149,7 @@ Absolute Pfade in Verknüpfungen, Git-Includes, PowerShell-Profilen und Terminal
 Auf einem frischen Windows genügt die GUI; kein Skript muss von Hand gestartet werden. `Start-GUI.cmd` startet auch bei der Standard-Ausführungsrichtlinie von Windows.
 
 1. Bei OneDrive anmelden und warten, bis dieser Ordner und das Backup-Archiv heruntergeladen sind.
-2. `Setup.cmd` doppelt anklicken, die GUI über das Startmenü (**Windows Setup Backup**) öffnen und im Reiter Wiederherstellung **Entwicklungsprogramme installieren** wählen. Das installiert Git, GitHub CLI, Node.js, VS Code und 7-Zip über WinGet sowie OpenCode über npm; vorhandene Programme werden übersprungen.
+2. `Setup.cmd` doppelt anklicken, die GUI über das Startmenü (**Windows Setup Backup**) öffnen und im Reiter Wiederherstellung **Entwicklungsprogramme installieren** wählen. Das installiert Git, GitHub CLI, Node.js, VS Code, 7-Zip und die OpenCode-Desktop-App über WinGet sowie die OpenCode-CLI über npm; vorhandene Programme werden übersprungen.
 3. Über **Archiv ...** das Backup wählen, Archivpasswort eintragen, **Liste aktualisieren** und die Sicherung markieren.
 4. **Entwicklungsumgebung wiederherstellen** wählen. Ein Lauf spielt die Einstellungen (VS Code, Git, PowerShell-Profil, Terminal, Explorer) zurück und alles, was die Sicherung an VS-Code-Erweiterungen, globalen npm-Paketen, SSH-Schlüsseln und KI-Client-Daten enthält.
 

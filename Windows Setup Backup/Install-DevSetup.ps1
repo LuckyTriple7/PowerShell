@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-Installiert die Entwicklungsumgebung auf einem frischen Windows: Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode.
+Installiert die Entwicklungsumgebung auf einem frischen Windows: Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode (Desktop-App und CLI).
 .DESCRIPTION
 Installiert nur Programme. Einstellungen kommen danach aus einer WindowsSetup-Sicherung; -OpenRestore öffnet dafür die GUI.
 Bereits vorhandene Programme werden übersprungen, das Skript kann also beliebig oft laufen.
@@ -12,7 +12,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\Install-DevSetup.ps1 -OpenRestore
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string[]]$WingetPackages = @('Git.Git','GitHub.cli','OpenJS.NodeJS','Microsoft.VisualStudioCode','7zip.7zip'),
+    [string[]]$WingetPackages = @('Git.Git','GitHub.cli','OpenJS.NodeJS','Microsoft.VisualStudioCode','7zip.7zip','SST.OpenCodeDesktop'),
     [string[]]$NpmPackages = @('opencode-ai'),
     [switch]$OpenRestore
 )

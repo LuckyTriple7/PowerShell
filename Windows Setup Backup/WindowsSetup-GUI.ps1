@@ -566,7 +566,7 @@ $browsePython.Add_Click({
 $previewRestore.Add_Click({ try { Start-UiOperation (New-UiRestoreRequest $true) } catch { Show-UiError $_ } })
 $previewExtras.Add_Click({ try { Start-UiOperation (New-UiRestoreRequest $true $true) } catch { Show-UiError $_ } })
 $installDevPrograms.Add_Click({ try {
-    $description = "Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode installieren?`r`n`r`nBereits vorhandene Programme werden übersprungen. Windows fragt für einzelne Installationen nach Administratorrechten."
+    $description = "Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode (Desktop-App und CLI) installieren?`r`n`r`nBereits vorhandene Programme werden übersprungen. Windows fragt für einzelne Installationen nach Administratorrechten."
     if ([Windows.Forms.MessageBox]::Show($form,$description,'Entwicklungsprogramme installieren','YesNo','Question','Button1') -eq 'Yes') {
         Start-UiOperation ([pscustomobject]@{ SchemaVersion = 1; Operation = 'Install' })
     }
