@@ -43,6 +43,8 @@ try {
     $mutex = [Threading.Mutex]::new($false, $mutexName)
     try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'Eine andere Sicherung oder Wiederherstellung dieses Benutzers laeuft bereits.' }
+    # Programs installed since the GUI started (Node.js, VS Code) are only on the registry PATH.
+    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
     if ($request.Operation -in @('Restore','Verify') -and [IO.Path]::GetExtension([string]$request.BackupPath) -in @('.zip','.7z')) {
         $archivePath = Get-SetupAbsoluteDirectory ([string]$request.BackupPath)
         $archiveType = [IO.Path]::GetExtension($archivePath).TrimStart('.').ToUpperInvariant()
@@ -88,6 +90,13 @@ try {
                 else { $result.WarningCount++; Write-JobLine "WARNUNG: Alte Sicherung nicht gelöscht: $($removal.Path): $($removal.Error)" }
             }
         }
+    } elseif ($request.Operation -eq 'Install') {
+        # Own process: winget and npm report on stderr, which must not end the job.
+        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $installer = Join-Path $PSScriptRoot 'Install-DevSetup.ps1'
+        & { $ErrorActionPreference = 'Continue'; [Console]::OutputEncoding = [Text.Encoding]::UTF8
+            & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer 2>&1 } | ForEach-Object { Write-JobLine $_ }
+        if ($LASTEXITCODE -ne 0) { throw 'Nicht alle Programme wurden installiert; siehe Protokoll.' }
     } elseif ($request.Operation -eq 'Verify') {
         Write-JobLine "Sicherung wird geprüft: $($request.BackupPath)"
         $integrity = Test-SetupBackupIntegrity ([string]$request.BackupPath)
@@ -99,8 +108,8 @@ try {
         $requestCustomFolders = [string[]]@($request.CustomFolderKeys | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $requestStoreApps = [string[]]@($request.StorePackageFamilies | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $requestChocolatey = [string[]]@($request.ChocolateyPackages | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $requestFonts = [bool]$request.Fonts; $requestWlan = [bool]$request.WlanProfiles; $requestSsh = [bool]$request.SshKeys; $requestClaude = [bool]$request.ClaudeSettings
-        $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or $requestFonts -or $requestWlan -or $requestSsh -or $requestClaude -or
+        $requestFonts = [bool]$request.Fonts; $requestWlan = [bool]$request.WlanProfiles; $requestSsh = [bool]$request.SshKeys; $requestClaude = [bool]$request.ClaudeSettings; $requestNpm = [bool]$request.NpmPackages
+        $hasWindowsRestore = $request.Programs -or $request.Settings -or $request.Shortcuts -or $requestCustomFolders.Count -gt 0 -or $requestFonts -or $requestWlan -or $requestSsh -or $requestClaude -or $requestNpm -or
             $request.VSCodeExtensions -or $request.PowerShellModules -or $request.UserEnvironment -or $request.MachineEnvironment -or
             $request.WindowsComponents -or $request.Connections -or $requestStoreApps.Count -gt 0 -or $requestChocolatey.Count -gt 0
         $windowsParameters = $null; $pythonParameters = $null
@@ -111,7 +120,7 @@ try {
                 UseSavedVersions = [bool]$request.UseSavedVersions; AcceptAgreements = [bool]$request.AcceptAgreements
                 PackageIds = [string[]]@($request.PackageIds | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                 CustomFolderKeys = $requestCustomFolders
-                VSCodeExtensions = [bool]$request.VSCodeExtensions; PowerShellModules = [bool]$request.PowerShellModules
+                VSCodeExtensions = [bool]$request.VSCodeExtensions; PowerShellModules = [bool]$request.PowerShellModules; NpmPackages = $requestNpm
                 UserEnvironment = [bool]$request.UserEnvironment; MachineEnvironment = [bool]$request.MachineEnvironment
                 WindowsComponents = [bool]$request.WindowsComponents; Connections = [bool]$request.Connections
                 StorePackageFamilies = $requestStoreApps

@@ -5,6 +5,7 @@ param(
     [string[]]$CustomFolderKeys = @(),
     [switch]$VSCodeExtensions,
     [switch]$PowerShellModules,
+    [switch]$NpmPackages,
     [switch]$UserEnvironment,
     [switch]$MachineEnvironment,
     [switch]$WindowsComponents,
@@ -91,7 +92,7 @@ foreach ($key in @($CustomFolderKeys | Select-Object -Unique)) {
 
 if ($Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings) {
     $personalPath = Join-Path $backup 'personal-settings.json'
-    if (-not (Test-Path -LiteralPath $personalPath)) { throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile, SSH-Schlüssel oder Claude-Daten.' }
+    if (-not (Test-Path -LiteralPath $personalPath)) { throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile, SSH-Schlüssel oder KI-Client-Daten.' }
     $personal = Get-Content -LiteralPath $personalPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-SetupDocumentSchema $personal 'personal-settings.json'
     function Get-PersonalSource {
@@ -161,7 +162,7 @@ if ($Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings) {
     if ($ClaudeSettings) {
         $claudeRoot = Join-Path $env:USERPROFILE '.claude'
         $restored = 0
-        foreach ($claudeFile in @($personal.ClaudeFiles)) {
+        foreach ($claudeFile in (Get-SetupItems $personal.ClaudeFiles)) {
             $relative = [string]$claudeFile.Relative
             if (-not (Test-SetupClaudePath $relative) -or [string]$claudeFile.File -ne "Personal\Claude\$relative") { throw "Ungültiger Claude-Eintrag in personal-settings.json: $relative" }
             $source = Get-PersonalSource $claudeFile 'Claude'
@@ -170,11 +171,51 @@ if ($Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings) {
         if (-not $WhatIfPreference) { Write-Host "Claude-Code-Dateien wiederhergestellt: $restored von $(@($personal.ClaudeFiles).Count); die übrigen waren bereits identisch." }
         # Memory folders are named after the project path, so they only match again under the same user name and project folders.
         if (@($personal.ClaudeFiles).Count -gt 0) { Write-Host 'Claude-Code-Memories gelten für dieselben Projektpfade wie beim Backup. Claude Code danach neu starten.' }
+        if ($personal.ClaudeMcp) {
+            if ([string]$personal.ClaudeMcp.File -ne 'Personal\ClaudeMcp\mcp-servers.json') { throw "Ungültiger MCP-Eintrag in personal-settings.json: $($personal.ClaudeMcp.File)" }
+            $source = Get-PersonalSource $personal.ClaudeMcp 'ClaudeMcp'
+            $serializer = Get-SetupJsonSerializer
+            $savedServers = $serializer.DeserializeObject([IO.File]::ReadAllText($source, [Text.Encoding]::UTF8))['mcpServers']
+            if ($savedServers -isnot [Collections.IDictionary]) { throw "Ungültige MCP-Sicherung: $source" }
+            # Merge into the live file: it also holds the login and per-project state, which must survive.
+            $claudeJson = Join-Path $env:USERPROFILE '.claude.json'
+            Assert-SetupNoReparsePoint $claudeJson
+            $claudeConfig = if (Test-Path -LiteralPath $claudeJson -PathType Leaf) { $serializer.DeserializeObject([IO.File]::ReadAllText($claudeJson, [Text.Encoding]::UTF8)) } else { [Collections.Generic.Dictionary[string,object]]::new() }
+            if ($claudeConfig -isnot [Collections.IDictionary]) { throw "Unerwarteter Inhalt in $claudeJson" }
+            if (-not $claudeConfig.ContainsKey('mcpServers') -or $claudeConfig['mcpServers'] -isnot [Collections.IDictionary]) { $claudeConfig['mcpServers'] = [Collections.Generic.Dictionary[string,object]]::new() }
+            $changed = @(foreach ($name in @($savedServers.Keys)) {
+                if (-not $claudeConfig['mcpServers'].ContainsKey($name) -or $serializer.Serialize($claudeConfig['mcpServers'][$name]) -cne $serializer.Serialize($savedServers[$name])) { $name }
+            })
+            if ($changed.Count -gt 0 -and $PSCmdlet.ShouldProcess("$claudeJson ($($changed -join ', '))", 'Claude-Code-MCP-Server übernehmen (vorhandene Datei vorher sichern)')) {
+                if (Test-Path -LiteralPath $claudeJson -PathType Leaf) {
+                    $previous = Join-SetupSafePath $customUndo 'ClaudeMcp\.claude.json'
+                    New-Item -ItemType Directory -Path (Split-Path $previous -Parent) -Force | Out-Null
+                    Copy-Item -LiteralPath $claudeJson -Destination $previous -Force
+                }
+                foreach ($name in $changed) { $claudeConfig['mcpServers'][$name] = $savedServers[$name] }
+                $temporary = "$claudeJson.restore-tmp"
+                [IO.File]::WriteAllText($temporary, $serializer.Serialize($claudeConfig), [Text.UTF8Encoding]::new($false))
+                Move-Item -LiteralPath $temporary -Destination $claudeJson -Force
+                Write-Host "Claude-Code-MCP-Server übernommen: $($changed -join ', '). Lief Claude Code dabei, kann es die Datei wieder überschreiben: dann beenden und diese Wiederherstellung wiederholen."
+            } elseif ($changed.Count -eq 0 -and -not $WhatIfPreference) { Write-Host 'Claude-Code-MCP-Server waren bereits identisch.' }
+        }
+        $openCodeFiles = Get-SetupItems $personal.OpenCodeFiles
+        if ($openCodeFiles.Count -gt 0) {
+            $openCodeRoot = Join-Path $env:USERPROFILE '.config\opencode'
+            $restored = 0
+            foreach ($openCodeFile in $openCodeFiles) {
+                $relative = [string]$openCodeFile.Relative
+                if (-not (Test-SetupOpenCodePath $relative) -or [string]$openCodeFile.File -ne "Personal\OpenCode\$relative") { throw "Ungültiger OpenCode-Eintrag in personal-settings.json: $relative" }
+                $source = Get-PersonalSource $openCodeFile 'OpenCode'
+                if (Copy-PersonalFile $source (Join-SetupSafePath $openCodeRoot $relative) "OpenCode\$relative" $openCodeFile.SHA256) { $restored++ }
+            }
+            if (-not $WhatIfPreference) { Write-Host "OpenCode-Dateien wiederhergestellt: $restored von $($openCodeFiles.Count); Plugins installiert OpenCode beim nächsten Start selbst." }
+        }
     }
 }
 
 $developerPath = Join-Path $backup 'developer-packages.json'
-if (($VSCodeExtensions -or $PowerShellModules) -and -not (Test-Path -LiteralPath $developerPath)) { throw 'Diese Sicherung enthält kein Entwicklerpaket-Inventar.' }
+if (($VSCodeExtensions -or $PowerShellModules -or $NpmPackages) -and -not (Test-Path -LiteralPath $developerPath)) { throw 'Diese Sicherung enthält kein Entwicklerpaket-Inventar.' }
 if (Test-Path -LiteralPath $developerPath) {
     $developer = Get-Content -LiteralPath $developerPath -Raw | ConvertFrom-Json
     Assert-SetupDocumentSchema $developer 'developer-packages.json'
@@ -211,6 +252,23 @@ if (Test-Path -LiteralPath $developerPath) {
             if ($UseSavedVersions) { $parameters.RequiredVersion = [string]$module.Version }
             if ($PSCmdlet.ShouldProcess("$($module.Name) $($module.Version)", 'PowerShell-Modul installieren')) {
                 try { Install-Module @parameters } catch { Write-Warning "PowerShell-Modul konnte nicht installiert werden: $($module.Name): $_" }
+            }
+        }
+    }
+    if ($NpmPackages) {
+        $npmList = Get-SetupItems $developer.NpmGlobalPackages
+        foreach ($package in $npmList) {
+            if ($package.Name -notmatch '^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$' -or $package.Version -notmatch '^[0-9A-Za-z.+-]+$') { throw "Ungültiger npm-Paketeintrag: $($package.Name)" }
+        }
+        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $npm -and $npmList.Count -gt 0) { Write-Warning 'npm ist nicht installiert; globale npm-Pakete werden übersprungen. Zuerst Node.js installieren.' }
+        else {
+            foreach ($package in $npmList) {
+                $argument = if ($UseSavedVersions) { "$($package.Name)@$($package.Version)" } else { [string]$package.Name }
+                if ($PSCmdlet.ShouldProcess($argument, 'npm-Paket global installieren')) {
+                    & $npm.Source install -g $argument
+                    if ($LASTEXITCODE -ne 0) { Write-Warning "npm-Paket konnte nicht installiert werden: $argument" }
+                }
             }
         }
     }

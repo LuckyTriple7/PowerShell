@@ -35,6 +35,10 @@ try {
         Test-SetupRequest $legacy
     }
 
+    Test-Case 'Install request needs no further fields' {
+        Test-SetupRequest ([pscustomobject]@{ SchemaVersion = 1; Operation = 'Install' })
+    }
+
     $restore = [pscustomobject]@{
         SchemaVersion = 1; Operation = 'Restore'; BackupPath = $backup; Preview = $true
         Programs = $false; Settings = $true; Shortcuts = $false; IncludeCommonStartMenu = $false
@@ -97,7 +101,7 @@ try {
         catch { if ($_.Exception.Message -notlike 'KeepLast*') { throw } }
         $request = [pscustomobject]@{ SchemaVersion = 1; Operation = 'Backup'; Destination = (Join-Path $testRoot 'Destination'); CreateArchive = $true; IncludeSensitiveData = $true; ProtectedArchivePassword = '' }
         try { Test-SetupRequest $request; throw 'Schlüssel ohne Verschlüsselung wurden akzeptiert.' }
-        catch { if ($_.Exception.Message -notlike 'WLAN- und SSH-Schlüssel*') { throw } }
+        catch { if ($_.Exception.Message -notlike 'WLAN-, SSH- und API-Schlüssel*') { throw } }
     }
 
     Test-Case 'Retention keeps the newest backups and ignores foreign items' {
@@ -132,6 +136,21 @@ try {
         catch { if ($_.Exception.Message -notlike 'Prüfsumme stimmt nicht:*') { throw } }
     }
 
+    Test-Case 'npm restore previews saved packages and rejects invalid names' {
+        $npmBackup = Join-Path $testRoot 'NpmBackup'
+        New-Item -ItemType Directory -Path $npmBackup -Force | Out-Null
+        $document = [ordered]@{ SchemaVersion = 1; VSCodeProducts = @(); PowerShellModules = @(); NpmGlobalPackages = @([ordered]@{ Name = '@scope/tool'; Version = '1.2.3' }); Warnings = @() }
+        Save-SetupDocument $document (Join-Path $npmBackup 'developer-packages.json')
+        & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') -BackupPath $npmBackup -NpmPackages -WhatIf 3>$null | Out-Null
+        $document.NpmGlobalPackages[0].Name = 'tool & calc'
+        Save-SetupDocument $document (Join-Path $npmBackup 'developer-packages.json')
+        try { & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') -BackupPath $npmBackup -NpmPackages -WhatIf 3>$null | Out-Null; throw 'Ungültiger npm-Paketname wurde akzeptiert.' }
+        catch { if ($_.Exception.Message -notlike 'Ungültiger npm-Paketeintrag:*') { throw } }
+        # Backups made before 1.4.0.0 have no npm list at all.
+        Save-SetupDocument ([ordered]@{ SchemaVersion = 1; VSCodeProducts = @(); PowerShellModules = @(); Warnings = @() }) (Join-Path $npmBackup 'developer-packages.json')
+        & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') -BackupPath $npmBackup -NpmPackages -WhatIf 3>$null | Out-Null
+    }
+
     Test-Case 'Claude path filter keeps memories and excludes credentials' {
         foreach ($allowed in @('settings.json','CLAUDE.md','projects\c--Projekt\memory\MEMORY.md','skills\demo\SKILL.md','hooks\check.ps1')) {
             Assert-True (Test-SetupClaudePath $allowed) "Erlaubter Claude-Pfad abgelehnt: $allowed"
@@ -139,6 +158,39 @@ try {
         foreach ($blocked in @('.credentials.json','projects\c--Projekt\abc.jsonl','file-history\x\y','cache\x','projects\c--Projekt\memory\..\..\..\.credentials.json','settings.json.bak','skills\synced\x\SKILL.md')) {
             Assert-True (-not (Test-SetupClaudePath $blocked)) "Claude-Pfad nicht ausgeschlossen: $blocked"
         }
+    }
+
+    Test-Case 'OpenCode path filter keeps config and excludes dependencies' {
+        foreach ($allowed in @('opencode.jsonc','opencode.json','AGENTS.md','package.json','agent\review.md','commands\x.md','plugins\p.ts')) {
+            Assert-True (Test-SetupOpenCodePath $allowed) "Erlaubter OpenCode-Pfad abgelehnt: $allowed"
+        }
+        foreach ($blocked in @('node_modules\x\index.js','plugins\node_modules\a.js','opencode.jsonc.bak-20260925-204652','package-lock.json','bun.lock','agent\..\..\.ssh\id_rsa')) {
+            Assert-True (-not (Test-SetupOpenCodePath $blocked)) "OpenCode-Pfad nicht ausgeschlossen: $blocked"
+        }
+        Assert-True ((Test-SetupOpenCodeSecretPath 'opencode.jsonc') -and -not (Test-SetupOpenCodeSecretPath 'AGENTS.md')) 'OpenCode-Hauptkonfiguration nicht als sensibel erkannt.'
+    }
+
+    Test-Case 'Claude MCP restore merges servers and keeps other settings' {
+        $mcpBackup = Join-Path $testRoot 'McpBackup'
+        $fakeProfile = Join-Path $testRoot 'McpProfile'
+        New-Item -ItemType Directory -Path (Join-Path $mcpBackup 'Personal\ClaudeMcp'), $fakeProfile -Force | Out-Null
+        Save-SetupDocument ([ordered]@{ SchemaVersion = 1; Computer = 'TEST-PC'; Files = @() }) (Join-Path $mcpBackup 'manifest.json')
+        $mcpFile = Join-Path $mcpBackup 'Personal\ClaudeMcp\mcp-servers.json'
+        [IO.File]::WriteAllText($mcpFile, '{"mcpServers":{"memory":{"type":"http","url":"https://a/mcp","headers":{"X":"1"}}}}')
+        $document = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = $true; Fonts = @(); WlanProfiles = @(); SshFiles = @(); ClaudeFiles = @(); OpenCodeFiles = @()
+            ClaudeMcp = [ordered]@{ Servers = @('memory'); File = 'Personal\ClaudeMcp\mcp-servers.json'; SHA256 = (Get-FileHash -LiteralPath $mcpFile -Algorithm SHA256).Hash }; References = @() }
+        Save-SetupDocument $document (Join-Path $mcpBackup 'personal-settings.json')
+        # Keys differing only in case break ConvertFrom-Json in 5.1; the merge must keep them.
+        [IO.File]::WriteAllText((Join-Path $fakeProfile '.claude.json'), '{"oauthAccount":{"a":1},"A":1,"a":2,"mcpServers":{"other":{"type":"stdio"}}}')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $fakeProfile
+            & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') -BackupPath $mcpBackup -ClaudeSettings -UndoRoot (Join-Path $testRoot 'McpUndo') -Confirm:$false | Out-Null
+        } finally { $env:USERPROFILE = $savedProfile }
+        $merged = (Get-SetupJsonSerializer).DeserializeObject([IO.File]::ReadAllText((Join-Path $fakeProfile '.claude.json')))
+        Assert-True ($merged['mcpServers'].ContainsKey('memory') -and $merged['mcpServers'].ContainsKey('other')) 'MCP-Server wurden nicht zusammengeführt.'
+        Assert-True ($merged['A'] -eq 1 -and $merged['a'] -eq 2 -and $merged['oauthAccount']['a'] -eq 1) 'Übrige Claude-Einstellungen gingen verloren.'
+        Assert-True (Test-Path -Path (Join-Path $testRoot 'McpUndo\*\ClaudeMcp\.claude.json')) 'Vorherige .claude.json wurde nicht gesichert.'
     }
 
     Test-Case 'GUI builds with the new controls' {
@@ -208,6 +260,10 @@ try {
             Assert-True (@($personal.ClaudeFiles).Count -gt 0) 'Claude-Daten wurden trotz Option nicht erfasst.'
         }
         Assert-True (@($personal.ClaudeFiles | Where-Object { $_.Relative -like '*credentials*' -or $_.Relative -like '*.jsonl' }).Count -eq 0) 'Claude-Anmeldedaten oder Verläufe wurden gesichert.'
+        if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.config\opencode\opencode.jsonc')) {
+            Assert-True (@($personal.OpenCodeFiles | Where-Object Relative -eq 'opencode.jsonc').Count -eq 1) 'OpenCode-Konfiguration wurde trotz Option nicht erfasst.'
+        }
+        Assert-True (@($personal.OpenCodeFiles | Where-Object { $_.Relative -like 'node_modules\*' }).Count -eq 0) 'OpenCode-node_modules wurden gesichert.'
         $script:sevenZipBackup = $archive; $script:sevenZipPassword = $password
     }
 

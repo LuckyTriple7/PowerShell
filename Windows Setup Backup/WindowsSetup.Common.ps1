@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 # Shared helpers. Run Backup-WindowsSetup.ps1 or Restore-WindowsSetup.ps1.
-$script:SetupBackupVersion = '1.2.1.0'
+$script:SetupBackupVersion = '1.4.0.0'
 function Write-SetupJson {
     param($Value, [string]$Path)
     ConvertTo-Json -InputObject $Value -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
@@ -31,6 +31,37 @@ function Test-SetupClaudePath {
     if ($path -in @('settings.json','settings.local.json','CLAUDE.md','keybindings.json')) { return $true }
     if ($path -match '^projects\\[^\\]+\\memory\\.+') { return $true }
     return $path -match '^(skills|commands|agents|hooks|plans|output-styles)\\.+'
+}
+
+function Test-SetupOpenCodePath {
+    # OpenCode user config only; node_modules and lock files are rebuilt by OpenCode, *.bak-* are old copies.
+    param([string]$Relative)
+    $path = $Relative.Replace('/','\')
+    if ($path -match '(^|\\)\.\.(\\|$)' -or $path.Contains(':')) { return $false }
+    if ($path -match '(^|\\)node_modules(\\|$)' -or $path -match '\.bak') { return $false }
+    if ($path -in @('opencode.json','opencode.jsonc','tui.json','tui.jsonc','AGENTS.md','package.json')) { return $true }
+    return $path -match '^(agents?|commands?|modes?|plugins?|skills?|tools?|themes)\\.+'
+}
+
+function Test-SetupOpenCodeSecretPath {
+    # The main config carries provider API keys and MCP headers, so it is backed up only into encrypted archives.
+    param([string]$Relative)
+    return $Relative -match '^opencode\.jsonc?$'
+}
+
+function Get-SetupJsonSerializer {
+    # Keeps foreign JSON (e.g. ~\.claude.json) intact: case-sensitive keys and no depth limit, unlike ConvertFrom-Json in 5.1.
+    Add-Type -AssemblyName System.Web.Extensions
+    $serializer = [Web.Script.Serialization.JavaScriptSerializer]::new()
+    $serializer.MaxJsonLength = [int]::MaxValue
+    $serializer.RecursionLimit = 1000
+    return $serializer
+}
+
+function Get-SetupItems {
+    # @($null) has one element in 5.1; older backups lack newer lists entirely.
+    param($Value)
+    return @(@($Value) | Where-Object { $null -ne $_ })
 }
 
 function Get-SetupChocolateyPath {

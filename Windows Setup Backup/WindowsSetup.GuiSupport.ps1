@@ -264,7 +264,8 @@ function Remove-SetupBackup {
 function Test-SetupRequest {
     param($Request)
     if ($Request.SchemaVersion -ne 1) { throw 'Unbekannte Auftragsversion.' }
-    if ($Request.Operation -notin @('Backup','Restore','Verify')) { throw 'Unbekannte Aktion.' }
+    if ($Request.Operation -notin @('Backup','Restore','Verify','Install')) { throw 'Unbekannte Aktion.' }
+    if ($Request.Operation -eq 'Install') { return }
     $booleanFields = if ($Request.Operation -eq 'Backup') {
         @('IncludeDeveloperSettings','SkipWinget','SkipPython','SkipChocolatey','AcceptSourceAgreements','CreateArchive','IncludeSensitiveData','IncludeClaude')
     } elseif ($Request.Operation -eq 'Restore') {
@@ -272,7 +273,7 @@ function Test-SetupRequest {
             'VSCodeExtensions','PowerShellModules','UserEnvironment','MachineEnvironment','WindowsComponents','Connections')
     } else { @() }
     # Added after 1.1.1.0; absent in older requests and then treated as false.
-    $optionalRestoreFields = @('Fonts','WlanProfiles','SshKeys','ClaudeSettings')
+    $optionalRestoreFields = @('Fonts','WlanProfiles','SshKeys','ClaudeSettings','NpmPackages')
     if ($Request.Operation -eq 'Restore') { $booleanFields += $optionalRestoreFields }
     foreach ($name in $booleanFields) {
         $property = $Request.PSObject.Properties[$name]
@@ -313,7 +314,7 @@ function Test-SetupRequest {
         $backupPassword = Unprotect-SetupSecret ([string]$Request.ProtectedArchivePassword)
         Assert-SetupArchivePassword $backupPassword
         if ($Request.PSObject.Properties['IncludeSensitiveData'] -and [bool]$Request.IncludeSensitiveData -and -not ([bool]$Request.CreateArchive -and $backupPassword)) {
-            throw 'WLAN- und SSH-Schlüssel werden nur in ein verschlüsseltes 7z-Archiv (Archiv mit Passwort) gesichert.'
+            throw 'WLAN-, SSH- und API-Schlüssel werden nur in ein verschlüsseltes 7z-Archiv (Archiv mit Passwort) gesichert.'
         }
     } else {
         $root = Get-SetupAbsoluteDirectory $Request.BackupPath
@@ -326,9 +327,9 @@ function Test-SetupRequest {
         $extrasSelected = $customFolderKeys.Count -gt 0 -or $Request.VSCodeExtensions -or $Request.PowerShellModules -or
             $Request.UserEnvironment -or $Request.MachineEnvironment -or $Request.WindowsComponents -or $Request.Connections -or
             $storePackageFamilies.Count -gt 0 -or $chocolateyPackages.Count -gt 0 -or
-            [bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys -or [bool]$Request.ClaudeSettings
+            [bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys -or [bool]$Request.ClaudeSettings -or [bool]$Request.NpmPackages
         if (([bool]$Request.Fonts -or [bool]$Request.WlanProfiles -or [bool]$Request.SshKeys -or [bool]$Request.ClaudeSettings) -and -not (Test-SetupBackupDocument $root 'personal-settings.json' $archivePassword)) {
-            throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile, SSH-Schlüssel oder Claude-Daten.'
+            throw 'Diese Sicherung enthält keine Schriftarten, WLAN-Profile, SSH-Schlüssel oder KI-Client-Daten.'
         }
         if (-not ($Request.Programs -or $Request.Settings -or $Request.Shortcuts -or $Request.PythonPackages -or $extrasSelected)) { throw 'Mindestens einen Bestandteil zur Wiederherstellung auswählen.' }
         if ($Request.Programs -and -not $manifest.WingetReady) { throw 'Dieser Sicherung fehlt eine verwendbare WinGet-Liste.' }
@@ -379,7 +380,8 @@ function Get-SetupTaskArguments {
     foreach ($path in @($WorkerPath, $RequestPath)) {
         if ($path -match '["\r\n]') { throw 'Ungültiger Pfad für die Aufgabenplanung.' }
     }
-    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -RequestPath "{1}"' -f $WorkerPath, $RequestPath
+    # A fresh Windows blocks script files by default; the GUI must still be able to start its own worker.
+    $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -RequestPath "{1}"' -f $WorkerPath, $RequestPath
     if ($Notify) { $arguments += ' -Notify' }
     return $arguments
 }
@@ -466,7 +468,7 @@ function Test-SetupBackupIntegrity {
     $personalPath = Join-Path $root 'personal-settings.json'
     if (Test-Path -LiteralPath $personalPath -PathType Leaf) {
         $personal = Read-SetupDocument $personalPath
-        foreach ($item in @(@($personal.Fonts) + @($personal.WlanProfiles) + @($personal.SshFiles) + @($personal.ClaudeFiles))) {
+        foreach ($item in @(@($personal.Fonts) + @($personal.WlanProfiles) + @($personal.SshFiles) + @($personal.ClaudeFiles) + @($personal.ClaudeMcp) + @($personal.OpenCodeFiles))) {
             if ($item) { $entries.Add([pscustomobject]@{ Stored = [string]$item.File; SHA256 = [string]$item.SHA256 }) }
         }
     }

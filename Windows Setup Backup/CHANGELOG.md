@@ -2,6 +2,21 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.4.0.0] - 2026-10-10
+### Entwicklungsumgebung auf neuem Rechner
+- Neue Schaltfläche **Entwicklungsprogramme installieren** (Skript `Install-DevSetup.ps1`) installiert Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode auf einem frischen Windows.
+- Mit Entwicklereinstellungen werden global installierte npm-Pakete gesichert und im Reiter Zusatzbereiche wiederhergestellt.
+- Neue Schaltfläche **Entwicklungsumgebung wiederherstellen** spielt Einstellungen, VS-Code-Erweiterungen, npm-Pakete, SSH-Schlüssel und KI-Clients in einem Lauf zurück.
+- Neues `Setup.cmd` installiert oder aktualisiert eine lokale Kopie unter `C:\Windows Setup Backup`, damit `GuiState` nicht über OneDrive zwischen Rechnern geteilt wird.
+- GUI und Hintergrundaufträge starten auch bei der Standard-Ausführungsrichtlinie eines frischen Windows.
+
+## [1.3.0.0] - 2026-10-01
+### OpenCode und MCP-Server
+- Die Option **KI-Clients** (bisher Claude-Code-Memories) sichert zusätzlich die OpenCode-Konfiguration aus `~\.config\opencode` (ohne `node_modules`, Lock- und `.bak`-Dateien).
+- Benutzerweite Claude-Code-MCP-Server aus `~\.claude.json` werden gesichert und bei der Wiederherstellung in die vorhandene Datei zusammengeführt.
+- Konfigurationen mit API-Schlüsseln (`opencode.json(c)`, MCP-Server) landen nur im verschlüsselten 7z mit sensiblen Daten.
+- Fehlende Listen älterer Sicherungen werden nicht mehr als ein Eintrag gezählt.
+
 ## [1.2.1.0] - 2026-09-27
 ### Claude-Code-Daten
 - Neue Option für Claude-Code-Memories und -Einstellungen (ohne Anmeldedaten und Verläufe) mit Wiederherstellung im Reiter Zusatzbereiche.

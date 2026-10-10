@@ -18,6 +18,7 @@ param(
     [string[]]$CustomFolderKeys = @(),
     [switch]$VSCodeExtensions,
     [switch]$PowerShellModules,
+    [switch]$NpmPackages,
     [switch]$UserEnvironment,
     [switch]$MachineEnvironment,
     [switch]$WindowsComponents,
@@ -32,7 +33,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WindowsSetup.Common.ps1')
-$extrasSelected = @($CustomFolderKeys | Where-Object { $_ }).Count -gt 0 -or $VSCodeExtensions -or $PowerShellModules -or $UserEnvironment -or $MachineEnvironment -or $WindowsComponents -or $Connections -or @($StorePackageFamilies | Where-Object { $_ }).Count -gt 0 -or @($ChocolateyPackages | Where-Object { $_ }).Count -gt 0 -or $Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings
+$extrasSelected = @($CustomFolderKeys | Where-Object { $_ }).Count -gt 0 -or $VSCodeExtensions -or $PowerShellModules -or $NpmPackages -or $UserEnvironment -or $MachineEnvironment -or $WindowsComponents -or $Connections -or @($StorePackageFamilies | Where-Object { $_ }).Count -gt 0 -or @($ChocolateyPackages | Where-Object { $_ }).Count -gt 0 -or $Fonts -or $WlanProfiles -or $SshKeys -or $ClaudeSettings
 if (-not ($Programs -or $Settings -or $Shortcuts -or $extrasSelected)) { throw 'Mindestens einen Bestandteil auswählen. Für eine Vorschau -WhatIf verwenden.' }
 if ($IncludeCommonStartMenu -and -not $Shortcuts) { throw '-IncludeCommonStartMenu erfordert -Shortcuts.' }
 $backup = (Resolve-Path -LiteralPath $BackupPath).ProviderPath
@@ -149,7 +150,7 @@ foreach ($entry in $registry) {
     }
 }
 $extraParameters = @{ BackupPath = $backup; CustomFolderKeys = $CustomFolderKeys; VSCodeExtensions = $VSCodeExtensions
-    PowerShellModules = $PowerShellModules; UserEnvironment = $UserEnvironment; MachineEnvironment = $MachineEnvironment
+    PowerShellModules = $PowerShellModules; NpmPackages = $NpmPackages; UserEnvironment = $UserEnvironment; MachineEnvironment = $MachineEnvironment
     WindowsComponents = $WindowsComponents; Connections = $Connections; StorePackageFamilies = $StorePackageFamilies
     ChocolateyPackages = $ChocolateyPackages; Fonts = $Fonts; WlanProfiles = $WlanProfiles; SshKeys = $SshKeys; ClaudeSettings = $ClaudeSettings; UseSavedVersions = $UseSavedVersions; UndoRoot = $UndoRoot; WhatIf = $WhatIfPreference; Confirm = $false }
 if ($extrasSelected) { & (Join-Path $PSScriptRoot 'Restore-SetupExtras.ps1') @extraParameters }

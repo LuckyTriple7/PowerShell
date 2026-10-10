@@ -61,7 +61,7 @@ try {
 } catch { Add-ExtraWarning "Netzlaufwerke konnten nicht inventarisiert werden: $_" }
 Write-SetupJson @{ SchemaVersion = 1; Printers = $printers; MappedDrives = $drives } (Join-Path $BackupPath 'devices-connections.json')
 
-$developer = [ordered]@{ SchemaVersion = 1; VSCodeProducts = @(); PowerShellModules = @(); Warnings = @() }
+$developer = [ordered]@{ SchemaVersion = 1; VSCodeProducts = @(); PowerShellModules = @(); NpmGlobalPackages = @(); Warnings = @() }
 if ($IncludeDeveloperSettings) {
     foreach ($product in @(
         @{ Name = 'VSCode'; Commands = @('code.cmd','code.exe'); Paths = @("$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd", "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd") },
@@ -89,6 +89,18 @@ if ($IncludeDeveloperSettings) {
                 Select-Object Name, Version, Repository | Sort-Object Name, Version)
         }
     } catch { Add-ExtraWarning "PowerShell-Module konnten nicht erfasst werden: $_" }
+    try {
+        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
+        if ($npm) {
+            # npm ls exits 1 for harmless tree problems but still prints the JSON; stderr must not stop the script in 5.1.
+            $npmJson = @(& { $ErrorActionPreference = 'Continue'; & $npm.Source ls -g --depth=0 --json 2>$null }) -join "`n"
+            if ([string]::IsNullOrWhiteSpace($npmJson)) { throw "Exitcode $LASTEXITCODE" }
+            $npmTree = $npmJson | ConvertFrom-Json
+            # npm and corepack ship with Node.js; linked packages have no version.
+            $developer.NpmGlobalPackages = @($npmTree.dependencies.PSObject.Properties | Where-Object { $_.Name -notin @('npm','corepack') -and $_.Value.version } |
+                ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Version = [string]$_.Value.version } } | Sort-Object Name)
+        }
+    } catch { Add-ExtraWarning "Globale npm-Pakete konnten nicht erfasst werden: $_" }
 }
 $developer.Warnings = @($warnings)
 Write-SetupJson $developer (Join-Path $BackupPath 'developer-packages.json')
@@ -122,7 +134,7 @@ function Add-PersonalFile {
     Copy-Item -LiteralPath $Source -Destination $target -Force
     (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 }
-$personal = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = [bool]$IncludeSensitiveData; Fonts = @(); WlanProfiles = @(); SshFiles = @(); ClaudeFiles = @(); References = @() }
+$personal = [ordered]@{ SchemaVersion = 1; SensitiveIncluded = [bool]$IncludeSensitiveData; Fonts = @(); WlanProfiles = @(); SshFiles = @(); ClaudeFiles = @(); ClaudeMcp = $null; OpenCodeFiles = @(); References = @() }
 # Per-user fonts only; fonts in C:\Windows\Fonts come with Windows or their installers.
 try {
     $fontRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
@@ -181,6 +193,40 @@ if ($IncludeClaude) {
             }
         }
     } catch { Add-ExtraWarning "Claude-Code-Memories und -Einstellungen konnten nicht vollständig gesichert werden: $_" }
+    # User-scope MCP servers live in ~\.claude.json next to account data; only that part is kept, and its headers carry API keys.
+    $claudeJson = Join-Path $env:USERPROFILE '.claude.json'
+    if (Test-Path -LiteralPath $claudeJson -PathType Leaf) {
+        if (-not $IncludeSensitiveData) { Write-Host 'Claude-Code-MCP-Server übersprungen: Sie enthalten API-Schlüssel und werden nur mit sensiblen Daten in ein verschlüsseltes 7z gesichert.' }
+        else {
+            try {
+                $serializer = Get-SetupJsonSerializer
+                $claudeConfig = $serializer.DeserializeObject([IO.File]::ReadAllText($claudeJson, [Text.Encoding]::UTF8))
+                if ($claudeConfig -is [Collections.IDictionary] -and $claudeConfig.ContainsKey('mcpServers') -and $claudeConfig['mcpServers'] -is [Collections.IDictionary] -and $claudeConfig['mcpServers'].Count -gt 0) {
+                    $stored = 'Personal\ClaudeMcp\mcp-servers.json'
+                    $target = Join-SetupSafePath $BackupPath $stored
+                    New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
+                    [IO.File]::WriteAllText($target, $serializer.Serialize(@{ mcpServers = $claudeConfig['mcpServers'] }), [Text.UTF8Encoding]::new($false))
+                    $personal.ClaudeMcp = [pscustomobject]@{ Servers = @($claudeConfig['mcpServers'].Keys | Sort-Object); File = $stored; SHA256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
+                }
+            } catch { Add-ExtraWarning "Claude-Code-MCP-Server konnten nicht gesichert werden: $_" }
+        }
+    }
+    try {
+        $openCodeRoot = Join-Path $env:USERPROFILE '.config\opencode'
+        if (Test-Path -LiteralPath $openCodeRoot -PathType Container) {
+            $skippedSecrets = 0
+            foreach ($file in @(Get-ChildItem -LiteralPath $openCodeRoot -File -Recurse -Force -ErrorAction Stop)) {
+                $relative = $file.FullName.Substring($openCodeRoot.Length + 1)
+                if (-not (Test-SetupOpenCodePath $relative)) { continue }
+                if ((Test-SetupOpenCodeSecretPath $relative) -and -not $IncludeSensitiveData) { $skippedSecrets++; continue }
+                if ($file.LinkType) { Add-ExtraWarning "Verknüpfte OpenCode-Datei wurde ausgelassen: $($file.FullName)"; continue }
+                $stored = "Personal\OpenCode\$relative"
+                try { $personal.OpenCodeFiles += [pscustomobject]@{ Relative = $relative; File = $stored; SHA256 = (Add-PersonalFile $file.FullName $stored) } }
+                catch { Add-ExtraWarning "OpenCode-Datei nicht gesichert: $($file.FullName): $_" }
+            }
+            if ($skippedSecrets -gt 0) { Write-Host 'OpenCode-Hauptkonfiguration übersprungen: Sie enthält API-Schlüssel und wird nur mit sensiblen Daten in ein verschlüsseltes 7z gesichert.' }
+        }
+    } catch { Add-ExtraWarning "OpenCode-Einstellungen konnten nicht vollständig gesichert werden: $_" }
 }
 # Reference files for manual restore; power plans and app associations need an elevated backup.
 try {
@@ -209,6 +255,7 @@ Write-SetupJson $personal (Join-Path $BackupPath 'personal-settings.json')
 
 [pscustomobject]@{ WarningCount = $warnings.Count; Warnings = @($warnings); EnvironmentCount = $environment.Count
     FeatureCount = $features.Count + $capabilities.Count; PrinterCount = $printers.Count; DriveCount = $drives.Count
-    ExtensionCount = @($developer.VSCodeProducts | ForEach-Object { $_.Extensions }).Count; ModuleCount = @($developer.PowerShellModules).Count
+    ExtensionCount = @($developer.VSCodeProducts | ForEach-Object { $_.Extensions }).Count; ModuleCount = @($developer.PowerShellModules).Count; NpmCount = @($developer.NpmGlobalPackages).Count
     ChocolateyCount = @($chocolatey.Packages).Count; FontCount = @($personal.Fonts).Count
-    WlanCount = @($personal.WlanProfiles).Count; SshCount = @($personal.SshFiles).Count; ClaudeCount = @($personal.ClaudeFiles).Count }
+    WlanCount = @($personal.WlanProfiles).Count; SshCount = @($personal.SshFiles).Count; ClaudeCount = @($personal.ClaudeFiles).Count
+    ClaudeMcpCount = $(if ($personal.ClaudeMcp) { @($personal.ClaudeMcp.Servers).Count } else { 0 }); OpenCodeCount = @($personal.OpenCodeFiles).Count }

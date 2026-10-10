@@ -268,11 +268,12 @@ $summary = @(
     ('WinGet-Installationsliste: ' + $(if ($wingetReady) { "$packageCount Pakete exportiert" } else { 'NICHT verfuegbar' }))
     "Python/pip: $pythonStatus"
     "Benutzerdefinierte Ordner: $($customFolderResults.Count)"
-    "VS-Code-Erweiterungen / PowerShell-Module: $($extraResult.ExtensionCount) / $($extraResult.ModuleCount)"
+    "VS-Code-Erweiterungen / PowerShell-Module / globale npm-Pakete: $($extraResult.ExtensionCount) / $($extraResult.ModuleCount) / $($extraResult.NpmCount)"
     "Chocolatey-Pakete: $($extraResult.ChocolateyCount)"
     "Umgebungsvariablen / Windows-Komponenten: $($extraResult.EnvironmentCount) / $($extraResult.FeatureCount)"
     "Drucker / Netzlaufwerke: $($extraResult.PrinterCount) / $($extraResult.DriveCount)"
     ('Claude-Code-Memories und -Einstellungen: ' + $(if ($IncludeClaude) { "$($extraResult.ClaudeCount) Dateien" } else { 'nicht ausgewaehlt' }))
+    ('Claude-Code-MCP-Server / OpenCode-Dateien: ' + $(if ($IncludeClaude) { "$($extraResult.ClaudeMcpCount) / $($extraResult.OpenCodeCount)" + $(if (-not $IncludeSensitiveData) { ' (ohne Konfigurationen mit API-Schluesseln)' }) } else { 'nicht ausgewaehlt' }))
     ('Schriftarten / WLAN-Profile / SSH-Dateien: {0} / {1}' -f $extraResult.FontCount, $(if ($IncludeSensitiveData) { "$($extraResult.WlanCount) / $($extraResult.SshCount)" } else { 'nicht ausgewaehlt' }))
     "Gesicherte Dateien: $($files.Count)"
     "Registry-Einstellungen: $($registryValues.Count)"
