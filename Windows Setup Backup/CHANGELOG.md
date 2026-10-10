@@ -2,6 +2,10 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.4.2.0] - 2026-10-10
+### Ordnerauswahl
+- Die Ordnerauswahl der GUI zeigt versteckte Ordner wie `AppData` immer an und erlaubt die Eingabe eines Pfads in der Adressleiste.
+
 ## [1.4.1.0] - 2026-10-10
 ### OpenCode-Desktop-App
 - **Entwicklungsprogramme installieren** installiert zusätzlich die OpenCode-Desktop-App (`SST.OpenCodeDesktop`).

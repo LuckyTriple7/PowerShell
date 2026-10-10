@@ -1,6 +1,6 @@
 # Windows-Setup sichern und wiederherstellen
 
-Aktuelle Version: **1.4.1.0**. Änderungen sind in [`CHANGELOG.md`](CHANGELOG.md) dokumentiert.
+Aktuelle Version: **1.4.2.0**. Änderungen sind in [`CHANGELOG.md`](CHANGELOG.md) dokumentiert.
 
 PowerShell-Skripte für eine spätere Neuinstallation. Bilder, Dokumente und andere persönliche Dateien sind ausgeschlossen; diese kommen über OneDrive. Programme werden als Installationsliste erfasst, nicht als installierte Programmdateien gesichert. Ansible ist für die Skripte nicht erforderlich und kann sie später aufrufen.
 

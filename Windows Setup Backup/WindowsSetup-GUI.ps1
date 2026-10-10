@@ -62,14 +62,55 @@ function Add-UiWide {
     param($Table, $Control, [int]$Row)
     $Table.Controls.Add($Control,0,$Row); $Table.SetColumnSpan($Control,3)
 }
+# FolderBrowserDialog hides AppData and other hidden folders unless Explorer shows them; the Explorer-style picker can force them.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SetupFolderPicker {
+    [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")] class FileOpenDialog { }
+    [ComImport, Guid("42F85136-DB7E-439C-85F1-E4075D135FC8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFileDialog {
+        [PreserveSig] int Show(IntPtr owner);
+        void SetFileTypes(); void SetFileTypeIndex(); void GetFileTypeIndex(); void Advise(); void Unadvise();
+        void SetOptions(uint options); void GetOptions(out uint options);
+        void SetDefaultFolder(IShellItem item); void SetFolder(IShellItem item); void GetFolder(); void GetCurrentSelection();
+        void SetFileName(); void GetFileName(); void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel(); void SetFileNameLabel(); void GetResult(out IShellItem item);
+    }
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem {
+        void BindToHandler(); void GetParent();
+        void GetDisplayName(uint form, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHCreateItemFromParsingName(string path, IntPtr context, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IShellItem item);
+    public static string Show(IntPtr owner, string title, string initialFolder) {
+        IFileDialog dialog = (IFileDialog)new FileOpenDialog();
+        try {
+            uint options; dialog.GetOptions(out options);
+            // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_FORCESHOWHIDDEN
+            dialog.SetOptions(options | 0x20 | 0x40 | 0x10000000);
+            dialog.SetTitle(title);
+            if (!String.IsNullOrEmpty(initialFolder)) {
+                Guid iid = typeof(IShellItem).GUID; IShellItem folder;
+                SHCreateItemFromParsingName(initialFolder, IntPtr.Zero, ref iid, out folder);
+                dialog.SetFolder(folder);
+            }
+            int shown = dialog.Show(owner);
+            if (shown == unchecked((int)0x800704C7)) { return null; }  // cancelled by the user
+            if (shown != 0) { Marshal.ThrowExceptionForHR(shown); }
+            IShellItem result; dialog.GetResult(out result);
+            string path; result.GetDisplayName(0x80058000, out path);
+            return path;
+        } finally { Marshal.ReleaseComObject(dialog); }
+    }
+}
+'@
 function Select-UiFolder {
     param($TextBox)
-    $dialog = [Windows.Forms.FolderBrowserDialog]::new()
-    $dialog.Description = 'Ordner auswählen'
-    if (-not [string]::IsNullOrWhiteSpace($TextBox.Text) -and (Test-Path -LiteralPath $TextBox.Text -PathType Container)) {
-        $dialog.SelectedPath = $TextBox.Text
-    }
-    try { if ($dialog.ShowDialog($form) -eq 'OK') { $TextBox.Text = $dialog.SelectedPath } } finally { $dialog.Dispose() }
+    $initial = if (-not [string]::IsNullOrWhiteSpace($TextBox.Text) -and (Test-Path -LiteralPath $TextBox.Text -PathType Container)) { (Resolve-Path -LiteralPath $TextBox.Text).ProviderPath } else { '' }
+    $selected = [SetupFolderPicker]::Show($form.Handle, 'Ordner auswählen', $initial)
+    if ($selected) { $TextBox.Text = $selected }
 }
 function Show-UiError {
     param($ErrorValue)
