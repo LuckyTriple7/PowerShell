@@ -2,9 +2,13 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 
+## [1.4.1.0] - 2026-10-10
+### OpenCode-Desktop-App
+- **Entwicklungsprogramme installieren** installiert zusätzlich die OpenCode-Desktop-App (`SST.OpenCodeDesktop`).
+
 ## [1.4.0.0] - 2026-10-10
 ### Entwicklungsumgebung auf neuem Rechner
-- Neue Schaltfläche **Entwicklungsprogramme installieren** (Skript `Install-DevSetup.ps1`) installiert Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode (Desktop-App und CLI) auf einem frischen Windows.
+- Neue Schaltfläche **Entwicklungsprogramme installieren** (Skript `Install-DevSetup.ps1`) installiert Git, GitHub CLI, Node.js, VS Code, 7-Zip und OpenCode auf einem frischen Windows.
 - Mit Entwicklereinstellungen werden global installierte npm-Pakete gesichert und im Reiter Zusatzbereiche wiederhergestellt.
 - Neue Schaltfläche **Entwicklungsumgebung wiederherstellen** spielt Einstellungen, VS-Code-Erweiterungen, npm-Pakete, SSH-Schlüssel und KI-Clients in einem Lauf zurück.
 - Neues `Setup.cmd` installiert oder aktualisiert eine lokale Kopie unter `C:\Windows Setup Backup`, damit `GuiState` nicht über OneDrive zwischen Rechnern geteilt wird.
